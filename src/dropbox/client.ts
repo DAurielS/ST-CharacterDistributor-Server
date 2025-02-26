@@ -6,6 +6,7 @@ import axios from 'axios';
 import { nanoid } from 'nanoid';
 import fetch from 'node-fetch';
 
+// Shared module variables
 const MODULE = '[Character-Distributor-Dropbox]';
 
 // Define token file path
@@ -17,6 +18,10 @@ let dropboxClient: Dropbox | null = null;
 
 // Access token
 let accessToken: string | null = null;
+let refreshToken: string | null = null;
+
+// Shared characters count - for stats
+let sharedCharactersCount = 0;
 
 /**
  * Save auth token to file
@@ -389,26 +394,102 @@ export async function uploadCharacter(characterPath: string, excludeTags: string
     }
     
     try {
-        // Read the character file
+        // Read the character file as a buffer
         const characterContent = fs.readFileSync(characterPath);
+        const filename = path.basename(characterPath);
         
-        // Parse the character data to check tags
-        const characterData = JSON.parse(characterContent.toString());
-        
-        // Check if the character has any excluded tags
-        if (characterData.tags) {
-            const tags = Array.isArray(characterData.tags) 
-                ? characterData.tags 
-                : characterData.tags.split(',').map((tag: string) => tag.trim());
+        // Check if it's a PNG file (character card)
+        if (filename.endsWith('.png')) {
+            // For PNG character cards, we need to extract the embedded JSON to check tags
+            console.log(chalk.blue(MODULE), `Processing PNG character card: ${filename}`);
+            
+            try {
+                // Extract JSON data from PNG (similar approach as in the characters endpoint)
+                const fileString = characterContent.toString('utf8');
+                const jsonStartIndex = fileString.indexOf('{');
                 
-            if (tags.some((tag: string) => excludeTags.includes(tag))) {
-                console.log(chalk.yellow(MODULE), 'Skipping character with excluded tag:', path.basename(characterPath));
-                return false;
+                if (jsonStartIndex !== -1) {
+                    // Found potential JSON data
+                    const jsonPart = fileString.substring(jsonStartIndex);
+                    
+                    // Try to parse the JSON
+                    try {
+                        // First attempt: try parsing the rest of the file
+                        let jsonData;
+                        try {
+                            jsonData = JSON.parse(jsonPart);
+                        } catch (jsonError) {
+                            // If that fails, try to find a valid JSON substring
+                            // Look for a sequence of balanced braces
+                            let braceCount = 0;
+                            let endIndex = 0;
+                            
+                            for (let i = 0; i < jsonPart.length; i++) {
+                                if (jsonPart[i] === '{') braceCount++;
+                                if (jsonPart[i] === '}') braceCount--;
+                                
+                                if (braceCount === 0 && i > 0) {
+                                    endIndex = i + 1;
+                                    break;
+                                }
+                            }
+                            
+                            if (endIndex > 0) {
+                                const jsonSubstring = jsonPart.substring(0, endIndex);
+                                jsonData = JSON.parse(jsonSubstring);
+                            } else {
+                                throw new Error('Could not find valid JSON data');
+                            }
+                        }
+                        
+                        // Check if the character has any excluded tags
+                        if (jsonData && jsonData.tags) {
+                            const tags = Array.isArray(jsonData.tags) 
+                                ? jsonData.tags 
+                                : jsonData.tags.split(',').map((tag: string) => tag.trim());
+                                
+                            if (tags.some((tag: string) => excludeTags.includes(tag))) {
+                                console.log(chalk.yellow(MODULE), 'Skipping character with excluded tag:', filename);
+                                return false;
+                            }
+                        }
+                    } catch (jsonParseError) {
+                        console.error(chalk.yellow(MODULE), `Error parsing JSON data from ${filename}:`, jsonParseError);
+                        // If we can't parse the JSON, we'll still upload the file
+                        // since we can't determine if it has excluded tags
+                    }
+                }
+            } catch (extractError) {
+                console.error(chalk.yellow(MODULE), `Error extracting data from ${filename}:`, extractError);
+                // Continue with upload even if we can't extract JSON
             }
+        } else if (filename.endsWith('.json')) {
+            // For plain JSON files, directly parse the content
+            try {
+                const characterData = JSON.parse(characterContent.toString('utf8'));
+                
+                // Check if the character has any excluded tags
+                if (characterData.tags) {
+                    const tags = Array.isArray(characterData.tags) 
+                        ? characterData.tags 
+                        : characterData.tags.split(',').map((tag: string) => tag.trim());
+                        
+                    if (tags.some((tag: string) => excludeTags.includes(tag))) {
+                        console.log(chalk.yellow(MODULE), 'Skipping character with excluded tag:', filename);
+                        return false;
+                    }
+                }
+            } catch (jsonError) {
+                console.error(chalk.yellow(MODULE), `Error parsing JSON in ${filename}:`, jsonError);
+                // Continue with upload anyway
+            }
+        } else {
+            // Not a PNG or JSON - skip this file
+            console.log(chalk.yellow(MODULE), 'Skipping non-character file:', filename);
+            return false;
         }
         
         // Upload the character file
-        const filename = path.basename(characterPath);
         const response = await dropboxClient.filesUpload({
             path: `/characters/${filename}`,
             contents: characterContent,
@@ -459,36 +540,62 @@ export async function generateShareLink(characterId: string): Promise<string | n
 }
 
 /**
- * Perform a sync operation to upload local characters to Dropbox
+ * Perform sync of characters to Dropbox
  */
-export async function performSync(charactersDir: string, excludeTags: string[]): Promise<{ success: boolean; count: number }> {
+export async function performSync(charactersDir: string, excludeTags: string[]): Promise<{success: boolean, count: number}> {
     if (!dropboxClient) {
         console.error(chalk.red(MODULE), 'Dropbox client not initialized');
         return { success: false, count: 0 };
     }
     
     try {
-        // Ensure characters folder exists
-        await ensureCharactersFolder();
+        // Create characters folder if it doesn't exist
+        try {
+            await dropboxClient.filesCreateFolderV2({
+                path: '/characters',
+                autorename: false
+            });
+            console.log(chalk.green(MODULE), 'Created characters folder in Dropbox');
+        } catch (error: any) {
+            if (error?.status === 409) {
+                console.log(chalk.blue(MODULE), 'Characters folder already exists in Dropbox');
+            } else {
+                console.error(chalk.red(MODULE), 'Error creating characters folder:', error);
+                throw error;
+            }
+        }
         
-        // Get list of local character files
-        const characterFiles = fs.readdirSync(charactersDir)
-            .filter((file: string) => file.endsWith('.json') || file.endsWith('.png'));
+        // List all character files in directory
+        console.log(chalk.blue(MODULE), `Looking for character files in: ${charactersDir}`);
+        const files = fs.readdirSync(charactersDir);
         
-        console.log(chalk.green(MODULE), `Found ${characterFiles.length} local character files`);
+        // Filter for PNG and JSON files only
+        const characterFiles = files.filter(file => 
+            file.endsWith('.png') || file.endsWith('.json')
+        );
+        
+        console.log(chalk.blue(MODULE), `Found ${characterFiles.length} potential character files`);
         
         // Upload each character
         let uploadedCount = 0;
         for (const file of characterFiles) {
             const fullPath = path.join(charactersDir, file);
-            const uploaded = await uploadCharacter(fullPath, excludeTags);
             
-            if (uploaded) {
+            // Skip directories
+            if (fs.statSync(fullPath).isDirectory()) {
+                continue;
+            }
+            
+            const success = await uploadCharacter(fullPath, excludeTags);
+            if (success) {
                 uploadedCount++;
             }
         }
         
-        console.log(chalk.green(MODULE), `Uploaded ${uploadedCount} characters to Dropbox`);
+        console.log(chalk.green(MODULE), `Successfully uploaded ${uploadedCount} characters to Dropbox`);
+        
+        // Update shared characters count (for stats)
+        sharedCharactersCount = uploadedCount;
         
         return { success: true, count: uploadedCount };
     } catch (error) {

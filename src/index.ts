@@ -516,29 +516,88 @@ async function init(router: Router) {
                 const files = fs.readdirSync(charactersDir);
                 console.log(chalk.green(MODULE), `Found ${files.length} files in characters directory`);
                 
-                // Process each JSON file to extract character information
+                // Process each PNG file to extract character information
                 const characters = [];
                 
                 for (const file of files) {
-                    // Only process JSON files
-                    if (!file.endsWith('.json')) continue;
+                    // Only process PNG files (SillyTavern character cards are PNG files with embedded JSON)
+                    if (!file.endsWith('.png')) continue;
                     
                     try {
                         const filePath = path.join(charactersDir, file);
-                        const fileContents = fs.readFileSync(filePath, 'utf8');
-                        const characterData = JSON.parse(fileContents);
                         
-                        // Extract relevant information - handle different possible formats
-                        const character = {
-                            name: characterData.name || characterData.char_name || 'Unknown Character',
-                            avatar_url: characterData.avatar || characterData.avatar_url || '',
-                            // You can add more fields as needed by the UI
-                            filename: file
-                        };
+                        // Read the PNG file as buffer
+                        const fileBuffer = fs.readFileSync(filePath);
                         
-                        characters.push(character);
+                        // Try to extract character data from the PNG
+                        try {
+                            // Extract JSON data from PNG
+                            // This is a simplified approach - looking for JSON data that starts with '{'
+                            // and assumes it's UTF-8 encoded
+                            const fileString = fileBuffer.toString('utf8');
+                            const jsonStartIndex = fileString.indexOf('{');
+                            
+                            if (jsonStartIndex !== -1) {
+                                // Found potential JSON data
+                                const jsonPart = fileString.substring(jsonStartIndex);
+                                
+                                // Try to parse the JSON
+                                try {
+                                    // We need to find where the actual JSON ends
+                                    // This is a simplistic approach - more robust solutions might be needed
+                                    let jsonData;
+                                    try {
+                                        // First attempt: try parsing the rest of the file
+                                        jsonData = JSON.parse(jsonPart);
+                                    } catch (jsonError) {
+                                        // If that fails, try to find a valid JSON substring
+                                        // Look for a sequence of balanced braces
+                                        let braceCount = 0;
+                                        let endIndex = 0;
+                                        
+                                        for (let i = 0; i < jsonPart.length; i++) {
+                                            if (jsonPart[i] === '{') braceCount++;
+                                            if (jsonPart[i] === '}') braceCount--;
+                                            
+                                            if (braceCount === 0 && i > 0) {
+                                                endIndex = i + 1;
+                                                break;
+                                            }
+                                        }
+                                        
+                                        if (endIndex > 0) {
+                                            const jsonSubstring = jsonPart.substring(0, endIndex);
+                                            jsonData = JSON.parse(jsonSubstring);
+                                        } else {
+                                            throw new Error('Could not find valid JSON data');
+                                        }
+                                    }
+                                    
+                                    if (jsonData) {
+                                        // Extract relevant information - handle different possible formats
+                                        const character = {
+                                            name: jsonData.name || jsonData.char_name || 'Unknown Character',
+                                            avatar_url: file, // Use the PNG filename itself as the avatar URL
+                                            // You can add more fields as needed by the UI
+                                            filename: file
+                                        };
+                                        
+                                        characters.push(character);
+                                        console.log(chalk.green(MODULE), `Successfully processed character: ${character.name}`);
+                                    }
+                                } catch (jsonParseError) {
+                                    console.error(chalk.yellow(MODULE), `Error parsing JSON data from ${file}:`, jsonParseError);
+                                    // Try alternative method or continue with other files
+                                }
+                            } else {
+                                console.log(chalk.yellow(MODULE), `No JSON data found in ${file}`);
+                            }
+                        } catch (extractError) {
+                            console.error(chalk.yellow(MODULE), `Error extracting data from ${file}:`, extractError);
+                            // Continue with other files
+                        }
                     } catch (fileError) {
-                        console.error(chalk.yellow(MODULE), `Error processing character file ${file}:`, fileError);
+                        console.error(chalk.yellow(MODULE), `Error reading character file ${file}:`, fileError);
                         // Continue with other files
                     }
                 }
