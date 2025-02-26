@@ -5,6 +5,7 @@ import * as path from 'path';
 import axios from 'axios';
 import { nanoid } from 'nanoid';
 import fetch from 'node-fetch';
+import { readMetadata } from 'png-metadata';
 
 // Shared module variables
 const MODULE = '[Character-Distributor-Dropbox]';
@@ -404,64 +405,74 @@ export async function uploadCharacter(characterPath: string, excludeTags: string
             console.log(chalk.blue(MODULE), `Processing PNG character card: ${filename}`);
             
             try {
-                // Extract JSON data from PNG (similar approach as in the characters endpoint)
-                const fileString = characterContent.toString('utf8');
-                const jsonStartIndex = fileString.indexOf('{');
+                // Extract metadata from PNG
+                const metadata = readMetadata(characterContent);
                 
-                if (jsonStartIndex !== -1) {
-                    // Found potential JSON data
-                    const jsonPart = fileString.substring(jsonStartIndex);
-                    
-                    // Try to parse the JSON
+                // Look for the 'chara' field which contains the base64-encoded character data
+                const charaField = metadata.find((field: any) => field.keyword === 'chara');
+                
+                if (charaField && charaField.text) {
                     try {
-                        // First attempt: try parsing the rest of the file
-                        let jsonData;
-                        try {
-                            jsonData = JSON.parse(jsonPart);
-                        } catch (jsonError) {
-                            // If that fails, try to find a valid JSON substring
-                            // Look for a sequence of balanced braces
-                            let braceCount = 0;
-                            let endIndex = 0;
-                            
-                            for (let i = 0; i < jsonPart.length; i++) {
-                                if (jsonPart[i] === '{') braceCount++;
-                                if (jsonPart[i] === '}') braceCount--;
-                                
-                                if (braceCount === 0 && i > 0) {
-                                    endIndex = i + 1;
-                                    break;
-                                }
-                            }
-                            
-                            if (endIndex > 0) {
-                                const jsonSubstring = jsonPart.substring(0, endIndex);
-                                jsonData = JSON.parse(jsonSubstring);
-                            } else {
-                                throw new Error('Could not find valid JSON data');
-                            }
-                        }
+                        // Decode the base64 data
+                        const jsonStr = Buffer.from(charaField.text, 'base64').toString('utf8');
+                        
+                        // Parse the JSON data
+                        const characterData = JSON.parse(jsonStr);
                         
                         // Check if the character has any excluded tags
-                        if (jsonData && jsonData.tags) {
-                            const tags = Array.isArray(jsonData.tags) 
-                                ? jsonData.tags 
-                                : jsonData.tags.split(',').map((tag: string) => tag.trim());
+                        if (characterData.tags) {
+                            const tags = Array.isArray(characterData.tags) 
+                                ? characterData.tags 
+                                : characterData.tags.split(',').map((tag: string) => tag.trim());
                                 
                             if (tags.some((tag: string) => excludeTags.includes(tag))) {
                                 console.log(chalk.yellow(MODULE), 'Skipping character with excluded tag:', filename);
                                 return false;
                             }
                         }
-                    } catch (jsonParseError) {
-                        console.error(chalk.yellow(MODULE), `Error parsing JSON data from ${filename}:`, jsonParseError);
-                        // If we can't parse the JSON, we'll still upload the file
-                        // since we can't determine if it has excluded tags
+                    } catch (jsonError) {
+                        console.error(chalk.yellow(MODULE), `Error processing JSON for ${filename}:`, jsonError);
+                        // If we can't parse the JSON, still upload the file
+                    }
+                } else {
+                    // Try alternative field names (some cards might use different metadata field names)
+                    const alternativeFields = ['character', 'tavern', 'card', 'data'];
+                    let found = false;
+                    
+                    for (const fieldName of alternativeFields) {
+                        const field = metadata.find((f: any) => f.keyword === fieldName);
+                        if (field && field.text) {
+                            try {
+                                const jsonStr = Buffer.from(field.text, 'base64').toString('utf8');
+                                const characterData = JSON.parse(jsonStr);
+                                
+                                // Check if the character has any excluded tags
+                                if (characterData.tags) {
+                                    const tags = Array.isArray(characterData.tags) 
+                                        ? characterData.tags 
+                                        : characterData.tags.split(',').map((tag: string) => tag.trim());
+                                    
+                                    if (tags.some((tag: string) => excludeTags.includes(tag))) {
+                                        console.log(chalk.yellow(MODULE), 'Skipping character with excluded tag:', filename);
+                                        return false;
+                                    }
+                                }
+                                
+                                found = true;
+                                break;
+                            } catch (err) {
+                                // Continue to next field
+                            }
+                        }
+                    }
+                    
+                    if (!found) {
+                        console.log(chalk.yellow(MODULE), `No character data found in ${filename} metadata, uploading anyway`);
                     }
                 }
-            } catch (extractError) {
-                console.error(chalk.yellow(MODULE), `Error extracting data from ${filename}:`, extractError);
-                // Continue with upload even if we can't extract JSON
+            } catch (metadataError) {
+                console.error(chalk.yellow(MODULE), `Error extracting metadata from ${filename}:`, metadataError);
+                // Continue with upload even if we can't extract metadata
             }
         } else if (filename.endsWith('.json')) {
             // For plain JSON files, directly parse the content
