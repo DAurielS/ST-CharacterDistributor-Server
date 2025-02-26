@@ -499,18 +499,41 @@ async function init(router: Router) {
         try {
             console.log(chalk.green(MODULE), 'Fetching character list');
             
-            // Forward request to SillyTavern's characters API
-            const response = await axios.get('http://localhost:8000/api/characters/list', {
-                headers: req.headers as Record<string, string>
-            });
-            
-            res.status(200).json(response.data);
-        } catch (error) {
-            console.error(chalk.red(MODULE), 'Error fetching character list:', error);
-            res.status(500).json({ 
-                success: false, 
-                error: 'Error fetching character list' 
-            });
+            // Try to forward request to SillyTavern's characters API
+            try {
+                const response = await axios.get('http://localhost:8000/api/characters/list', {
+                    headers: req.headers as Record<string, string>
+                });
+                
+                // Ensure we're returning an array
+                if (Array.isArray(response.data)) {
+                    console.log(chalk.green(MODULE), `Found ${response.data.length} characters from SillyTavern`);
+                    return res.status(200).json(response.data);
+                } else if (response.data && typeof response.data === 'object') {
+                    // Some APIs might wrap arrays in objects
+                    const possibleArray = Object.values(response.data).find(val => Array.isArray(val));
+                    if (possibleArray) {
+                        console.log(chalk.green(MODULE), `Found ${possibleArray.length} characters in response object`);
+                        return res.status(200).json(possibleArray);
+                    }
+                }
+                
+                // If we get here, the format wasn't recognized - return empty array
+                console.warn(chalk.yellow(MODULE), 'SillyTavern response format not recognized, returning empty array');
+                return res.status(200).json([]);
+                
+            } catch (stError: any) {
+                // If we can't reach SillyTavern, log the error and return an empty array
+                console.error(chalk.red(MODULE), 'Error connecting to SillyTavern API:', stError.message);
+                
+                // Return an empty array instead of an error
+                // This ensures the UI doesn't break when trying to use forEach
+                return res.status(200).json([]);
+            }
+        } catch (error: any) {
+            console.error(chalk.red(MODULE), 'Error in characters endpoint:', error.message);
+            // Always return an array even on error to prevent UI errors
+            return res.status(200).json([]);
         }
     });
     
