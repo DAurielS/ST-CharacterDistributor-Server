@@ -36,13 +36,29 @@ let settings: SettingsType = {
     excludeTags: ['Private']
 };
 
-let syncStatus = {
+// Define the sync status interface to include removal count
+interface SyncStatusType {
+    lastSync: string;
+    running: boolean;
+    sharedCharacters: number;
+}
+
+let syncStatus: SyncStatusType = {
     lastSync: '',
     running: false,
     sharedCharacters: 0
 };
 
 let syncIntervalId: ReturnType<typeof setInterval> | null = null;
+
+// Define character interface
+interface Character {
+    name: string;
+    avatar_url: string;
+    filename?: string;
+    tags?: string[];
+    excluded_by_tag?: string;
+}
 
 /**
  * Save settings to file
@@ -502,151 +518,302 @@ async function init(router: Router) {
     // Set up characters list proxy endpoint
     router.get('/characters', async (req: Request, res: Response) => {
         try {
-            console.log(chalk.green(MODULE), 'Fetching character list from filesystem');
+            console.log(chalk.blue(MODULE), 'Characters list requested');
             
-            // Use SillyTavern's character directory - same as in performSync
+            // Get the excluded tags from query params if available
+            const requestExcludeTags = req.query.excludeTags ? 
+                (req.query.excludeTags as string).split(',').map(tag => tag.trim()) : 
+                [];
+                
+            // Combine with settings exclude tags
+            const excludeTags = [...new Set([...settings.excludeTags, ...requestExcludeTags])];
+            
+            console.log(chalk.blue(MODULE), `Using exclude tags: ${excludeTags.join(', ')}`);
+            
+            // Use SillyTavern's character directory
+            // SillyTavern typically stores characters in "public/characters" or "data/default-user/characters"
             const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
             const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
             
-            console.log(chalk.green(MODULE), `Looking for characters in: ${charactersDir}`);
+            console.log(chalk.blue(MODULE), `Scanning character directory: ${charactersDir}`);
             
-            // Check if directory exists
+            // Initialize character collection
+            const characters: Character[] = [];
+            let processedCount = 0;
+            let successfulExtractCount = 0;
+            
+            // Only proceed if directory exists
             if (!fs.existsSync(charactersDir)) {
-                console.error(chalk.red(MODULE), `Characters directory does not exist: ${charactersDir}`);
-                return res.status(200).json([]);
+                console.error(chalk.red(MODULE), `Character directory ${charactersDir} not found`);
+                return res.status(404).json({ error: 'Character directory not found' });
             }
             
-            try {
-                // Read all files in the directory
-                const files = fs.readdirSync(charactersDir);
-                console.log(chalk.green(MODULE), `Found ${files.length} files in characters directory`);
+            // List all PNG and JSON files
+            const files = fs.readdirSync(charactersDir);
+            const characterFiles = files.filter(file => file.endsWith('.png') || file.endsWith('.json'));
+            
+            console.log(chalk.blue(MODULE), `Found ${characterFiles.length} potential character files`);
+            
+            // Process each character file
+            for (const filename of characterFiles) {
+                const filePath = path.join(charactersDir, filename);
                 
-                // Process each PNG file to extract character information
-                const characters = [];
-                let processedCount = 0;
-                let successCount = 0;
+                // Skip directories
+                if (fs.statSync(filePath).isDirectory()) {
+                    continue;
+                }
                 
-                for (const file of files) {
-                    // Only process PNG files (SillyTavern character cards are PNG files)
-                    if (!file.endsWith('.png')) continue;
-                    
-                    processedCount++;
-                    try {
-                        const filePath = path.join(charactersDir, file);
+                processedCount++;
+                
+                try {
+                    // Process differently based on file type
+                    if (filename.endsWith('.png')) {
+                        // For PNG files, we need to extract the character data
+                        const fileContent = fs.readFileSync(filePath);
                         
-                        // Read the PNG file as buffer
-                        const fileBuffer = fs.readFileSync(filePath);
-                        
-                        // First try using the png-metadata library
-                        let characterData = null;
-                        let extractionMethod = '';
+                        // Character data to extract
+                        let characterData: any = null;
+                        let extractionMethod = 'unknown';
                         
                         try {
-                            // Extract metadata from PNG using CommonJS import
-                            const metadata = pngMetadata.readMetadata(fileBuffer);
-                            extractionMethod = 'png-metadata library';
+                            // Try the png-metadata library
+                            const metadata = pngMetadata.readMetadata(fileContent);
+                            extractionMethod = 'png-metadata';
                             
-                            // Look for the 'chara' field which contains the base64-encoded character data
-                            const charaField = metadata.find((field: any) => field.keyword === 'chara');
+                            // Look for the chara field (or alternatives)
+                            const potentialFields = ['chara', 'character', 'tavern', 'card', 'data'];
+                            let characterField = null;
                             
-                            if (charaField && charaField.text) {
-                                // Decode the base64 data
-                                const jsonStr = Buffer.from(charaField.text, 'base64').toString('utf8');
-                                
-                                // Parse the JSON data
-                                characterData = JSON.parse(jsonStr);
-                            } else {
-                                // Try alternative field names (some cards might use different metadata field names)
-                                const alternativeFields = ['character', 'tavern', 'card', 'data'];
-                                
-                                for (const fieldName of alternativeFields) {
-                                    const field = metadata.find((f: any) => f.keyword === fieldName);
-                                    if (field && field.text) {
-                                        try {
-                                            const jsonStr = Buffer.from(field.text, 'base64').toString('utf8');
-                                            characterData = JSON.parse(jsonStr);
-                                            if (characterData) break;
-                                        } catch (err) {
-                                            // Continue to next field
-                                        }
+                            for (const field of potentialFields) {
+                                characterField = metadata.find((item: any) => item.keyword === field);
+                                if (characterField) break;
+                            }
+                            
+                            if (characterField && characterField.text) {
+                                try {
+                                    // Check if it's base64 encoded
+                                    if (/^[A-Za-z0-9+/]*={0,2}$/.test(characterField.text)) {
+                                        const decoded = Buffer.from(characterField.text, 'base64').toString('utf8');
+                                        characterData = JSON.parse(decoded);
+                                    } else {
+                                        // Try direct parsing
+                                        characterData = JSON.parse(characterField.text);
                                     }
+                                } catch (jsonError) {
+                                    console.error(chalk.yellow(MODULE), `Failed to parse JSON from metadata in ${filename}`);
                                 }
                             }
                         } catch (metadataError) {
-                            console.error(chalk.yellow(MODULE), `Error using png-metadata library for ${file}:`, metadataError);
+                            console.error(chalk.yellow(MODULE), `PNG metadata library failed for ${filename}, trying custom extractor`);
                             
-                            // Fallback to our custom PNG metadata extractor
+                            // Try our custom extractor as fallback
                             try {
-                                console.log(chalk.blue(MODULE), `Falling back to custom PNG extractor for ${file}`);
-                                characterData = extractCharacterData(fileBuffer);
-                                extractionMethod = 'custom extractor';
+                                characterData = extractCharacterData(fileContent);
+                                extractionMethod = 'custom-extractor';
                             } catch (customError) {
-                                console.error(chalk.red(MODULE), `Custom extractor also failed for ${file}:`, customError);
+                                console.error(chalk.red(MODULE), `All extraction methods failed for ${filename}`);
                             }
                         }
                         
-                        // If we found character data with either method, add it to our list
                         if (characterData) {
-                            const character = {
-                                name: characterData.name || characterData.char_name || 'Unknown Character',
-                                avatar_url: file, // Use the PNG filename itself as the avatar URL
-                                filename: file,
-                                // Add any additional fields needed by the UI
-                            };
+                            successfulExtractCount++;
                             
-                            characters.push(character);
-                            successCount++;
-                            console.log(chalk.green(MODULE), `Successfully processed character (using ${extractionMethod}): ${character.name}`);
+                            // Check if the character has any excluded tags
+                            let isExcluded = false;
+                            let excludedByTag = '';
+                            
+                            // Extract tags from the character data
+                            const characterTags = characterData.tags || [];
+                            const tagsList = Array.isArray(characterTags) ? 
+                                characterTags : 
+                                characterTags.split(',').map((tag: string) => tag.trim());
+                            
+                            // Check for excluded tags
+                            for (const tag of tagsList) {
+                                if (excludeTags.includes(tag)) {
+                                    isExcluded = true;
+                                    excludedByTag = tag;
+                                    break;
+                                }
+                            }
+                            
+                            // Add to list if not excluded
+                            if (!isExcluded) {
+                                characters.push({
+                                    name: characterData.name || characterData.char_name || path.basename(filename, '.png'),
+                                    avatar_url: filename,
+                                    filename: filename,
+                                    tags: tagsList
+                                });
+                            } else {
+                                console.log(chalk.yellow(MODULE), `Excluding character ${filename} due to tag: ${excludedByTag}`);
+                                
+                                // We still add it but mark it as excluded for UI feedback
+                                characters.push({
+                                    name: characterData.name || characterData.char_name || path.basename(filename, '.png'),
+                                    avatar_url: filename,
+                                    filename: filename,
+                                    tags: tagsList,
+                                    excluded_by_tag: excludedByTag
+                                });
+                            }
+                            
+                            console.log(chalk.green(MODULE), `Successfully processed ${filename} using ${extractionMethod}`);
                         } else {
-                            console.log(chalk.yellow(MODULE), `No character data found in ${file} metadata`);
+                            // Add with basic info if extraction failed
+                            characters.push({
+                                name: path.basename(filename, '.png'),
+                                avatar_url: filename,
+                                filename: filename,
+                                tags: []
+                            });
+                            
+                            console.log(chalk.yellow(MODULE), `Added ${filename} with basic info (extraction failed)`);
                         }
-                    } catch (fileError) {
-                        console.error(chalk.yellow(MODULE), `Error reading character file ${file}:`, fileError);
+                    } else if (filename.endsWith('.json')) {
+                        // For JSON files, parse directly
+                        const fileContent = fs.readFileSync(filePath, 'utf8');
+                        
+                        try {
+                            const characterData = JSON.parse(fileContent);
+                            
+                            // Check if the character has any excluded tags
+                            let isExcluded = false;
+                            let excludedByTag = '';
+                            
+                            // Extract tags from the character data
+                            const characterTags = characterData.tags || [];
+                            const tagsList = Array.isArray(characterTags) ? 
+                                characterTags : 
+                                characterTags.split(',').map((tag: string) => tag.trim());
+                            
+                            // Check for excluded tags
+                            for (const tag of tagsList) {
+                                if (excludeTags.includes(tag)) {
+                                    isExcluded = true;
+                                    excludedByTag = tag;
+                                    break;
+                                }
+                            }
+                            
+                            // Add to list if not excluded
+                            if (!isExcluded) {
+                                characters.push({
+                                    name: characterData.name || characterData.char_name || path.basename(filename, '.json'),
+                                    avatar_url: filename,
+                                    filename: filename,
+                                    tags: tagsList
+                                });
+                            } else {
+                                console.log(chalk.yellow(MODULE), `Excluding character ${filename} due to tag: ${excludedByTag}`);
+                                
+                                // We still add it but mark it as excluded for UI feedback
+                                characters.push({
+                                    name: characterData.name || characterData.char_name || path.basename(filename, '.json'),
+                                    avatar_url: filename,
+                                    filename: filename,
+                                    tags: tagsList,
+                                    excluded_by_tag: excludedByTag
+                                });
+                            }
+                            
+                            successfulExtractCount++;
+                        } catch (jsonError) {
+                            console.error(chalk.red(MODULE), `Error parsing JSON for ${filename}:`, jsonError);
+                            
+                            // Add with basic info if parsing failed
+                            characters.push({
+                                name: path.basename(filename, '.json'),
+                                avatar_url: filename,
+                                filename: filename,
+                                tags: []
+                            });
+                        }
                     }
+                } catch (error) {
+                    console.error(chalk.red(MODULE), `Error processing character file ${filename}:`, error);
+                    
+                    // Add with basic info on error
+                    characters.push({
+                        name: path.basename(filename, path.extname(filename)),
+                        avatar_url: filename,
+                        filename: filename,
+                        tags: []
+                    });
                 }
-                
-                console.log(chalk.green(MODULE), `Processed ${processedCount} PNG files, successfully extracted ${successCount} characters`);
-                return res.status(200).json(characters);
-                
-            } catch (fsError) {
-                console.error(chalk.red(MODULE), 'Error reading characters directory:', fsError);
-                return res.status(200).json([]);
             }
-        } catch (error: any) {
-            console.error(chalk.red(MODULE), 'Error in characters endpoint:', error.message);
-            // Always return an array even on error to prevent UI errors
-            return res.status(200).json([]);
+            
+            console.log(chalk.green(MODULE), `Processed ${processedCount} character files, successfully extracted data from ${successfulExtractCount}`);
+            console.log(chalk.green(MODULE), `Returning ${characters.length} characters to client`);
+            
+            return res.status(200).json(characters);
+        } catch (error) {
+            console.error(chalk.red(MODULE), 'Error getting character list:', error);
+            return res.status(500).json({ error: 'Error getting character list' });
         }
     });
     
     // Set up sync endpoint
     router.post('/sync', async (req: Request, res: Response) => {
-        if (syncStatus.running) {
-            return res.status(409).json({ success: false, error: 'Sync already in progress' });
-        }
-        
         try {
+            console.log(chalk.blue(MODULE), 'Sync requested');
+            
+            // Check if already authenticated
+            if (!checkDropboxAuth()) {
+                console.log(chalk.yellow(MODULE), 'Not authenticated for sync');
+                return res.status(401).json({ 
+                    success: false, 
+                    message: 'Not authenticated with Dropbox' 
+                });
+            }
+            
+            // Get the list of allowed character files from the request
+            const allowedCharacterFiles: string[] = req.body.allowedCharacterFiles || [];
+            const requestExcludeTags: string[] = req.body.excludeTags || [];
+            
+            // Combine request exclude tags with settings exclude tags
+            const excludeTags = [...new Set([...settings.excludeTags, ...requestExcludeTags])];
+            
+            console.log(chalk.blue(MODULE), `Sync requested. Allowed characters: ${allowedCharacterFiles.length}`);
+            console.log(chalk.blue(MODULE), `Excluded tags: ${excludeTags.join(', ')}`);
+            
+            // Update sync status
             syncStatus.running = true;
-            console.log(chalk.green(MODULE), 'Starting manual sync');
             
-            // Call the sync function from Dropbox client
-            const result = await performSync();
+            // Use SillyTavern's character directory
+            // SillyTavern typically stores characters in "public/characters" or "data/default-user/characters"
+            const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
+            const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
             
+            console.log(chalk.green(MODULE), `Using characters directory: ${charactersDir}`);
+            
+            // Run the sync operation
+            const result = await runSync(charactersDir, excludeTags, allowedCharacterFiles);
+            
+            // Update sync status
+            syncStatus.lastSync = new Date().toISOString();
             syncStatus.running = false;
-            syncStatus.lastSync = new Date().toLocaleString();
+            syncStatus.sharedCharacters = result.count;
             
-            res.status(200).json({
-                success: true,
-                message: 'Sync completed successfully',
-                sharedCharacters: syncStatus.sharedCharacters
+            // Save updated settings
+            await saveSettingsToFile();
+            
+            return res.status(200).json({
+                success: result.success,
+                count: result.count,
+                removed: result.removed || 0,
+                total: syncStatus.sharedCharacters,
+                message: result.success ? 
+                    `Successfully synced ${result.count} characters` + 
+                    (result.removed ? `, removed ${result.removed} characters` : '') 
+                    : 'Sync failed'
             });
         } catch (error) {
             console.error(chalk.red(MODULE), 'Error during sync:', error);
             syncStatus.running = false;
-            
-            res.status(500).json({
-                success: false,
-                error: 'Error during synchronization'
+            return res.status(500).json({ 
+                success: false, 
+                message: 'Internal server error during sync' 
             });
         }
     });
@@ -658,7 +825,7 @@ async function init(router: Router) {
             console.log(chalk.green(MODULE), 'Generating share link for character', characterId);
             
             // Generate share link
-            const shareLink = await generateShareLink(characterId);
+            const shareLink = await createShareLink(characterId);
             
             if (shareLink) {
                 res.status(200).json({ success: true, shareLink });

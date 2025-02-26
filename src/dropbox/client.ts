@@ -363,28 +363,42 @@ export async function clearAuthToken(): Promise<boolean> {
 async function ensureCharactersFolder(): Promise<void> {
     if (!dropboxClient) {
         console.error(chalk.red(MODULE), 'Dropbox client not initialized');
-        return;
+        throw new Error('Dropbox client not initialized');
     }
     
     try {
         // Check if the folder exists
+        console.log(chalk.blue(MODULE), 'Checking if characters folder exists in Dropbox');
         await dropboxClient.filesGetMetadata({
             path: '/characters'
         });
         
-        console.log(chalk.green(MODULE), 'Characters folder exists');
-    } catch (error) {
-        // If the folder doesn't exist, create it
-        try {
-            await dropboxClient.filesCreateFolderV2({
-                path: '/characters',
-                autorename: false
-            });
-            
-            console.log(chalk.green(MODULE), 'Created characters folder');
-        } catch (createError) {
-            console.error(chalk.red(MODULE), 'Error creating characters folder:', createError);
-            throw createError;
+        console.log(chalk.green(MODULE), 'Characters folder exists in Dropbox');
+    } catch (error: any) {
+        // If the folder doesn't exist (error status 409), create it
+        if (error?.status === 409 || error?.status === 404 || error?.status === 400) {
+            try {
+                console.log(chalk.yellow(MODULE), 'Characters folder does not exist, creating it');
+                await dropboxClient.filesCreateFolderV2({
+                    path: '/characters',
+                    autorename: false
+                });
+                
+                console.log(chalk.green(MODULE), 'Created characters folder in Dropbox');
+            } catch (createError: any) {
+                console.error(chalk.red(MODULE), 'Error creating characters folder:', createError);
+                
+                // If the error is that the folder already exists, that's fine
+                if (createError?.status === 409) {
+                    console.log(chalk.green(MODULE), 'Characters folder already exists (race condition)');
+                    return;
+                }
+                
+                throw createError;
+            }
+        } else {
+            console.error(chalk.red(MODULE), 'Error checking if characters folder exists:', error);
+            throw error;
         }
     }
 }
@@ -555,39 +569,87 @@ export async function generateShareLink(characterId: string): Promise<string | n
 /**
  * Perform sync of characters to Dropbox
  */
-export async function performSync(charactersDir: string, excludeTags: string[]): Promise<{success: boolean, count: number}> {
+export async function performSync(
+    charactersDir: string,
+    excludeTags: string[] = [],
+    allowedCharacterFiles: string[] = [] // List of files that are allowed to be uploaded
+): Promise<{success: boolean, count: number, removed: number}> {
     if (!dropboxClient) {
         console.error(chalk.red(MODULE), 'Dropbox client not initialized');
-        return { success: false, count: 0 };
+        return { success: false, count: 0, removed: 0 };
     }
     
     try {
         // Create characters folder if it doesn't exist
         try {
-            await dropboxClient.filesCreateFolderV2({
-                path: '/characters',
-                autorename: false
-            });
-            console.log(chalk.green(MODULE), 'Created characters folder in Dropbox');
-        } catch (error: any) {
-            if (error?.status === 409) {
-                console.log(chalk.blue(MODULE), 'Characters folder already exists in Dropbox');
-            } else {
-                console.error(chalk.red(MODULE), 'Error creating characters folder:', error);
-                throw error;
+            await ensureCharactersFolder();
+        } catch (error) {
+            console.error(chalk.red(MODULE), 'Error ensuring characters folder exists:', error);
+            throw error;
+        }
+        
+        // First, list what's currently in Dropbox
+        console.log(chalk.blue(MODULE), 'Listing existing files in Dropbox /characters folder');
+        const dropboxContents = await dropboxClient.filesListFolder({
+            path: '/characters'
+        });
+        
+        // Get filenames of all currently uploaded files
+        const currentlyUploadedFiles = dropboxContents.result.entries
+            .filter(entry => entry['.tag'] === 'file')
+            .map(entry => path.basename(entry.path_display || ''));
+        
+        console.log(chalk.blue(MODULE), `Found ${currentlyUploadedFiles.length} character files already on Dropbox`);
+        
+        // Step 1: Remove files that shouldn't be there anymore
+        let removedCount = 0;
+        for (const existingFile of currentlyUploadedFiles) {
+            // Skip non-character files
+            if (!existingFile.endsWith('.png') && !existingFile.endsWith('.json')) {
+                continue;
+            }
+            
+            // Check if this file is in the allowed list
+            const shouldExist = allowedCharacterFiles.length === 0 || 
+                               allowedCharacterFiles.includes(existingFile);
+            
+            if (!shouldExist) {
+                try {
+                    console.log(chalk.yellow(MODULE), `Removing file that no longer meets criteria: ${existingFile}`);
+                    await dropboxClient.filesDeleteV2({
+                        path: `/characters/${existingFile}`
+                    });
+                    removedCount++;
+                } catch (deleteError) {
+                    console.error(chalk.red(MODULE), `Error removing file ${existingFile}:`, deleteError);
+                    // Continue with other files even if one fails
+                }
             }
         }
         
-        // List all character files in directory
+        // Step 2: Upload files that should be there
         console.log(chalk.blue(MODULE), `Looking for character files in: ${charactersDir}`);
+        
+        // Check if directory exists
+        if (!fs.existsSync(charactersDir)) {
+            console.error(chalk.red(MODULE), `Characters directory does not exist: ${charactersDir}`);
+            return { success: false, count: 0, removed: removedCount };
+        }
+        
         const files = fs.readdirSync(charactersDir);
         
         // Filter for PNG and JSON files only
-        const characterFiles = files.filter(file => 
-            file.endsWith('.png') || file.endsWith('.json')
+        let characterFiles = files.filter(file => 
+            (file.endsWith('.png') || file.endsWith('.json'))
         );
         
-        console.log(chalk.blue(MODULE), `Found ${characterFiles.length} potential character files`);
+        // Further filter by allowed character files if provided
+        if (allowedCharacterFiles.length > 0) {
+            characterFiles = characterFiles.filter(file => allowedCharacterFiles.includes(file));
+            console.log(chalk.blue(MODULE), `Filtered to ${characterFiles.length} allowed character files`);
+        }
+        
+        console.log(chalk.blue(MODULE), `Found ${characterFiles.length} character files to process`);
         
         // Upload each character
         let uploadedCount = 0;
@@ -599,21 +661,30 @@ export async function performSync(charactersDir: string, excludeTags: string[]):
                 continue;
             }
             
+            // Check if the file already exists in Dropbox to avoid unnecessary uploads
+            const fileExists = currentlyUploadedFiles.includes(file);
+            
+            if (fileExists) {
+                console.log(chalk.blue(MODULE), `File already exists in Dropbox, skipping upload: ${file}`);
+                uploadedCount++;
+                continue;
+            }
+            
             const success = await uploadCharacter(fullPath, excludeTags);
             if (success) {
                 uploadedCount++;
             }
         }
         
-        console.log(chalk.green(MODULE), `Successfully uploaded ${uploadedCount} characters to Dropbox`);
+        console.log(chalk.green(MODULE), `Sync completed: ${uploadedCount} characters uploaded, ${removedCount} removed`);
         
         // Update shared characters count (for stats)
-        sharedCharactersCount = uploadedCount;
+        sharedCharactersCount = currentlyUploadedFiles.length - removedCount + uploadedCount;
         
-        return { success: true, count: uploadedCount };
+        return { success: true, count: uploadedCount, removed: removedCount };
     } catch (error) {
         console.error(chalk.red(MODULE), 'Error during sync:', error);
-        return { success: false, count: 0 };
+        return { success: false, count: 0, removed: 0 };
     }
 }
 
