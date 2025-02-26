@@ -11,7 +11,17 @@ const MODULE = '[Character-Distributor]';
 const dataDir = process.env.DATA_DIR || './data';
 const settingsFilePath = path.join(dataDir, 'character-distributor-settings.json');
 
-let settings = {
+// Define the settings interface with index signature
+interface SettingsType {
+    dropboxAppKey: string;
+    dropboxAppSecret: string;
+    autoSync: boolean;
+    syncInterval: number;
+    excludeTags: string[];
+    [key: string]: string | boolean | number | string[]; // Allow string indexing
+}
+
+let settings: SettingsType = {
     dropboxAppKey: '',
     dropboxAppSecret: '',
     autoSync: true,
@@ -32,17 +42,65 @@ let syncIntervalId: ReturnType<typeof setInterval> | null = null;
  */
 async function saveSettingsToFile() {
     try {
+        // Log what we're about to save
+        console.log(chalk.blue(MODULE), 'About to save settings:', JSON.stringify(settings, null, 2));
+        
         // Ensure directory exists
         const dir = path.dirname(settingsFilePath);
+        console.log(chalk.blue(MODULE), 'Settings directory path:', dir);
+        
         if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
+            console.log(chalk.blue(MODULE), 'Creating directory:', dir);
+            try {
+                fs.mkdirSync(dir, { recursive: true });
+                console.log(chalk.green(MODULE), 'Successfully created directory:', dir);
+            } catch (dirError) {
+                console.error(chalk.red(MODULE), 'Error creating directory:', dirError);
+                throw dirError;
+            }
+        } else {
+            console.log(chalk.blue(MODULE), 'Directory already exists:', dir);
         }
         
+        // Check if we can write to the directory
+        try {
+            fs.accessSync(dir, fs.constants.W_OK);
+            console.log(chalk.blue(MODULE), 'Directory is writable:', dir);
+        } catch (accessError) {
+            console.error(chalk.red(MODULE), 'Directory is not writable:', dir, accessError);
+            throw new Error(`Cannot write to directory: ${dir}`);
+        }
+        
+        // Save a copy of what we're writing for debugging
+        const settingsToSave = JSON.stringify(settings, null, 2);
+        console.log(chalk.blue(MODULE), 'Settings JSON to be saved:', settingsToSave);
+        
         // Write settings to file
-        fs.writeFileSync(settingsFilePath, JSON.stringify(settings, null, 2), 'utf8');
-        console.log(chalk.green(MODULE), 'Settings saved to file:', settingsFilePath);
+        try {
+            fs.writeFileSync(settingsFilePath, settingsToSave, 'utf8');
+            console.log(chalk.green(MODULE), 'Settings successfully saved to file:', settingsFilePath);
+            
+            // Verify the file was written
+            if (fs.existsSync(settingsFilePath)) {
+                const savedContent = fs.readFileSync(settingsFilePath, 'utf8');
+                console.log(chalk.blue(MODULE), 'Verification - saved file content:', savedContent);
+                
+                // Check if content matches what we intended to save
+                if (savedContent !== settingsToSave) {
+                    console.warn(chalk.yellow(MODULE), 'Warning: saved content differs from what we tried to save');
+                } else {
+                    console.log(chalk.green(MODULE), 'Verification successful: saved content matches what we tried to save');
+                }
+            } else {
+                console.error(chalk.red(MODULE), 'File not found after writing:', settingsFilePath);
+            }
+        } catch (writeError) {
+            console.error(chalk.red(MODULE), 'Error writing settings to file:', writeError);
+            throw writeError;
+        }
     } catch (error) {
-        console.error(chalk.red(MODULE), 'Error saving settings to file:', error);
+        console.error(chalk.red(MODULE), 'Error in saveSettingsToFile:', error);
+        throw error;
     }
 }
 
@@ -51,20 +109,63 @@ async function saveSettingsToFile() {
  */
 async function loadSettingsFromFile() {
     try {
+        console.log(chalk.blue(MODULE), 'Attempting to load settings from:', settingsFilePath);
+        
         if (fs.existsSync(settingsFilePath)) {
-            const data = fs.readFileSync(settingsFilePath, 'utf8');
-            const loadedSettings = JSON.parse(data);
+            console.log(chalk.blue(MODULE), 'Settings file exists, reading content');
             
-            // Update settings with loaded values
-            settings = { ...settings, ...loadedSettings };
-            console.log(chalk.green(MODULE), 'Settings loaded from file:', settingsFilePath);
-            console.log(chalk.green(MODULE), 'App Key configured:', !!settings.dropboxAppKey);
-            console.log(chalk.green(MODULE), 'App Secret configured:', !!settings.dropboxAppSecret);
+            try {
+                const data = fs.readFileSync(settingsFilePath, 'utf8');
+                console.log(chalk.blue(MODULE), 'Raw file content:', data);
+                
+                try {
+                    const loadedSettings = JSON.parse(data) as Partial<SettingsType>;
+                    console.log(chalk.blue(MODULE), 'Parsed settings from file:', JSON.stringify(loadedSettings, null, 2));
+                    
+                    // Save original settings for comparison
+                    const originalSettings = { ...settings };
+                    console.log(chalk.blue(MODULE), 'Original settings before merge:', JSON.stringify(originalSettings, null, 2));
+                    
+                    // Update settings with loaded values
+                    Object.keys(loadedSettings).forEach(key => {
+                        if (settings.hasOwnProperty(key) && loadedSettings[key] !== undefined) {
+                            settings[key] = loadedSettings[key] as typeof key; // Type assertion to ensure compatibility
+                        }
+                    });
+                    console.log(chalk.green(MODULE), 'Settings after merge:', JSON.stringify(settings, null, 2));
+                    
+                    // Compare original and new settings
+                    let changedKeys = [];
+                    for (const key in settings) {
+                        if (JSON.stringify(settings[key]) !== JSON.stringify(originalSettings[key])) {
+                            changedKeys.push(key);
+                        }
+                    }
+                    
+                    if (changedKeys.length > 0) {
+                        console.log(chalk.green(MODULE), 'Changed settings keys:', changedKeys.join(', '));
+                    } else {
+                        console.warn(chalk.yellow(MODULE), 'No settings keys were changed after loading from file');
+                    }
+                    
+                    console.log(chalk.green(MODULE), 'Settings loaded from file:', settingsFilePath);
+                    console.log(chalk.green(MODULE), 'App Key configured:', !!settings.dropboxAppKey, 'length:', settings.dropboxAppKey?.length || 0);
+                    console.log(chalk.green(MODULE), 'App Secret configured:', !!settings.dropboxAppSecret, 'length:', settings.dropboxAppSecret?.length || 0);
+                } catch (parseError) {
+                    console.error(chalk.red(MODULE), 'Error parsing settings file:', parseError);
+                    console.error(chalk.red(MODULE), 'Invalid JSON in settings file');
+                    throw parseError;
+                }
+            } catch (readError) {
+                console.error(chalk.red(MODULE), 'Error reading settings file:', readError);
+                throw readError;
+            }
         } else {
-            console.log(chalk.yellow(MODULE), 'Settings file not found, using defaults');
+            console.log(chalk.yellow(MODULE), 'Settings file not found, using defaults:', settingsFilePath);
+            console.log(chalk.yellow(MODULE), 'Default settings:', JSON.stringify(settings, null, 2));
         }
     } catch (error) {
-        console.error(chalk.red(MODULE), 'Error loading settings from file:', error);
+        console.error(chalk.red(MODULE), 'Error in loadSettingsFromFile:', error);
     }
 }
 
@@ -188,14 +289,41 @@ async function init(router: Router) {
     // Set up settings endpoint
     router.post('/settings', async (req: Request, res: Response) => {
         try {
-            const newSettings = req.body;
+            const newSettings = req.body as Partial<SettingsType>;
             console.log(chalk.green(MODULE), 'Received new settings');
             
-            // Update settings
-            settings = { ...settings, ...newSettings };
+            // Log the received settings for debugging
+            console.log(chalk.green(MODULE), 'New settings received:', JSON.stringify(newSettings));
+            console.log(chalk.green(MODULE), 'Current settings before update:', JSON.stringify(settings));
+            
+            // Ensure we're extracting the dropbox keys correctly
+            if (newSettings.hasOwnProperty('dropboxAppKey')) {
+                console.log(chalk.green(MODULE), `Received App Key of length: ${newSettings.dropboxAppKey?.length}`);
+            }
+            if (newSettings.hasOwnProperty('dropboxAppSecret')) {
+                console.log(chalk.green(MODULE), `Received App Secret of length: ${newSettings.dropboxAppSecret?.length}`);
+            }
+            
+            // Update settings - use a different approach to ensure all properties are updated
+            for (const key in newSettings) {
+                if (newSettings.hasOwnProperty(key) && settings.hasOwnProperty(key)) {
+                    settings[key] = newSettings[key] as any; // Type assertion needed since we've narrowed that this is a valid key
+                }
+            }
+            
+            // Log the updated settings
+            console.log(chalk.green(MODULE), 'Settings after update:', JSON.stringify(settings));
             
             // Save settings to file
             await saveSettingsToFile();
+            
+            // Read back the saved file to verify contents
+            try {
+                const savedContent = fs.readFileSync(settingsFilePath, 'utf8');
+                console.log(chalk.green(MODULE), 'Saved settings file content:', savedContent);
+            } catch (readError) {
+                console.error(chalk.red(MODULE), 'Error reading back saved settings:', readError);
+            }
             
             // Update sync interval if needed
             if (settings.autoSync) {
