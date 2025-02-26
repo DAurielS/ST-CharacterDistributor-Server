@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
 import { nanoid } from 'nanoid';
+import fetch from 'node-fetch';
 
 const MODULE = '[Character-Distributor-Dropbox]';
 
@@ -189,7 +190,8 @@ export async function initializeDropbox(token: string, appKey: string, appSecret
             dropboxClient = new Dropbox({
                 accessToken: token,
                 clientId: appKey,
-                clientSecret: appSecret
+                clientSecret: appSecret,
+                fetch: fetch
             });
             
             // Check if client was created successfully
