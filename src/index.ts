@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { Router, Request, Response } from 'express';
 import { setupApiRoutes } from './api/routes';
-import { initializeDropbox, performSync as runSync, generateShareLink as createShareLink, checkDropboxAuth, restoreDropboxClient, clearAuthToken } from './dropbox/client';
+import { initializeDropbox, performSync as runSync, generateShareLink as createShareLink, checkDropboxAuth, restoreDropboxClient, clearAuthToken, validateDropboxCredentials } from './dropbox/client';
 import * as fs from 'fs';
 import * as path from 'path';
 import express from 'express';
@@ -263,8 +263,13 @@ async function init(router: Router) {
             console.log(chalk.blue(MODULE), 'Auth raw request body type:', typeof req.body);
             console.log(chalk.blue(MODULE), 'Auth request body keys:', Object.keys(req.body));
             
-            const { accessToken, tokenType, expiresIn } = req.body;
+            // Extract token data with type validation
+            let accessToken = req.body.accessToken;
+            let tokenType = req.body.tokenType || 'bearer';
+            let expiresIn = req.body.expiresIn || 14400;
+            
             console.log(chalk.green(MODULE), 'Received Dropbox auth token');
+            console.log(chalk.green(MODULE), 'Token length:', accessToken?.length || 0);
             
             // Validate required fields
             if (!accessToken) {
@@ -272,6 +277,23 @@ async function init(router: Router) {
                 return res.status(400).json({
                     success: false,
                     error: 'Access token is missing in request'
+                });
+            }
+            
+            // Validate token format
+            if (typeof accessToken !== 'string') {
+                console.error(chalk.red(MODULE), 'Access token is not a string');
+                return res.status(400).json({
+                    success: false,
+                    error: 'Access token must be a string'
+                });
+            }
+            
+            if (accessToken.length < 10) {
+                console.error(chalk.red(MODULE), 'Access token is too short to be valid');
+                return res.status(400).json({
+                    success: false,
+                    error: 'Access token is too short to be valid'
                 });
             }
             
@@ -285,17 +307,42 @@ async function init(router: Router) {
             }
             
             // Detailed logging
-            console.log(chalk.green(MODULE), 'Attempting to initialize Dropbox with provided token');
-            console.log(chalk.green(MODULE), `App Key configured: ${!!settings.dropboxAppKey}`);
-            console.log(chalk.green(MODULE), `App Secret configured: ${!!settings.dropboxAppSecret}`);
+            console.log(chalk.green(MODULE), 'Attempting to validate Dropbox credentials');
+            console.log(chalk.green(MODULE), `App Key configured: ${!!settings.dropboxAppKey}, length: ${settings.dropboxAppKey.length}`);
+            console.log(chalk.green(MODULE), `App Secret configured: ${!!settings.dropboxAppSecret}, length: ${settings.dropboxAppSecret.length}`);
             
             try {
+                // First pre-validate the credentials
+                console.log(chalk.green(MODULE), 'Pre-validating Dropbox credentials...');
+                const validationResult = await validateDropboxCredentials(
+                    accessToken, 
+                    settings.dropboxAppKey, 
+                    settings.dropboxAppSecret
+                );
+                
+                if (!validationResult.valid) {
+                    console.error(chalk.red(MODULE), 'Credential pre-validation failed:', validationResult.message);
+                    return res.status(400).json({
+                        success: false,
+                        error: validationResult.message || 'Credential validation failed'
+                    });
+                }
+                
+                console.log(chalk.green(MODULE), 'Credential pre-validation successful:', validationResult.message);
+                
+                // If validation passed, proceed with full initialization
+                console.log(chalk.green(MODULE), 'Proceeding with full Dropbox client initialization...');
                 const success = await initializeDropbox(accessToken, settings.dropboxAppKey, settings.dropboxAppSecret);
                 
                 if (success) {
+                    console.log(chalk.green(MODULE), 'Dropbox client initialization successful');
                     res.status(200).json({ success: true });
                 } else {
-                    res.status(400).json({ success: false, error: 'Failed to initialize Dropbox client' });
+                    console.error(chalk.red(MODULE), 'Failed to initialize Dropbox client - unknown error');
+                    res.status(400).json({ 
+                        success: false, 
+                        error: 'Failed to initialize Dropbox client. See server logs for details.' 
+                    });
                 }
             } catch (dropboxError: any) {
                 // More detailed error logging
@@ -303,14 +350,32 @@ async function init(router: Router) {
                 console.error(chalk.red(MODULE), 'Error message:', dropboxError.message);
                 console.error(chalk.red(MODULE), 'Error details:', dropboxError.error || 'No details available');
                 
-                res.status(500).json({ 
+                // Customize response based on error type
+                let errorMessage = 'Dropbox initialization error';
+                let statusCode = 500;
+                
+                if (dropboxError.status === 401) {
+                    errorMessage = 'Invalid authorization token';
+                    statusCode = 401;
+                } else if (dropboxError.status === 400) {
+                    errorMessage = 'Bad request to Dropbox API';
+                    statusCode = 400;
+                } else if (dropboxError.message) {
+                    errorMessage = dropboxError.message;
+                }
+                
+                res.status(statusCode).json({ 
                     success: false, 
-                    error: `Dropbox initialization error: ${dropboxError.message || 'Unknown error'}`
+                    error: errorMessage,
+                    details: process.env.NODE_ENV !== 'production' ? 
+                        (dropboxError.error || dropboxError.stack || 'No details available') : undefined
                 });
             }
         } catch (error: any) {
             console.error(chalk.red(MODULE), 'Error processing auth token:', error);
             console.error(chalk.red(MODULE), 'Error details:', error.message || 'No message');
+            console.error(chalk.red(MODULE), 'Error stack:', error.stack || 'No stack trace');
+            
             res.status(500).json({ 
                 success: false, 
                 error: `Internal server error: ${error.message || 'Unknown error'}`
