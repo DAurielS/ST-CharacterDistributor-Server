@@ -4,6 +4,7 @@ import { setupApiRoutes } from './api/routes';
 import { initializeDropbox, performSync as runSync, generateShareLink as createShareLink, checkDropboxAuth, restoreDropboxClient, clearAuthToken } from './dropbox/client';
 import * as fs from 'fs';
 import * as path from 'path';
+import express from 'express';
 
 const MODULE = '[Character-Distributor]';
 
@@ -185,6 +186,10 @@ async function exit() {
 async function init(router: Router) {
     console.log(chalk.green(MODULE), 'Plugin loaded!');
     
+    // Add JSON body parser middleware to handle incoming JSON payloads
+    router.use(express.json());
+    console.log(chalk.green(MODULE), 'Added JSON body parser middleware');
+    
     // Load settings from file
     await loadSettingsFromFile();
     
@@ -240,8 +245,35 @@ async function init(router: Router) {
     // Set up auth endpoint
     router.post('/auth', async (req: Request, res: Response) => {
         try {
+            console.log(chalk.green(MODULE), 'Auth endpoint hit');
+            
+            // Add defensive check for undefined req.body
+            if (!req.body) {
+                console.error(chalk.red(MODULE), 'Auth request body is undefined - check JSON parsing middleware');
+                return res.status(400).json({ 
+                    success: false, 
+                    error: 'Request body is missing or malformed' 
+                });
+            }
+            
+            // Log request headers for debugging
+            console.log(chalk.blue(MODULE), 'Auth request headers:', JSON.stringify(req.headers));
+            
+            // Log raw request body type
+            console.log(chalk.blue(MODULE), 'Auth raw request body type:', typeof req.body);
+            console.log(chalk.blue(MODULE), 'Auth request body keys:', Object.keys(req.body));
+            
             const { accessToken, tokenType, expiresIn } = req.body;
             console.log(chalk.green(MODULE), 'Received Dropbox auth token');
+            
+            // Validate required fields
+            if (!accessToken) {
+                console.error(chalk.red(MODULE), 'Access token is missing in request');
+                return res.status(400).json({
+                    success: false,
+                    error: 'Access token is missing in request'
+                });
+            }
             
             // Check if app key and secret are configured
             if (!settings.dropboxAppKey || !settings.dropboxAppSecret) {
@@ -289,54 +321,87 @@ async function init(router: Router) {
     // Set up settings endpoint
     router.post('/settings', async (req: Request, res: Response) => {
         try {
-            const newSettings = req.body as Partial<SettingsType>;
             console.log(chalk.green(MODULE), 'Received new settings');
+            
+            // Add defensive check for undefined req.body
+            if (!req.body) {
+                console.error(chalk.red(MODULE), 'Request body is undefined - check JSON parsing middleware');
+                return res.status(400).json({ 
+                    success: false, 
+                    error: 'Request body is missing or malformed' 
+                });
+            }
+            
+            // Log request headers for debugging
+            console.log(chalk.blue(MODULE), 'Request headers:', JSON.stringify(req.headers));
+            
+            // Log raw request body and its type
+            console.log(chalk.blue(MODULE), 'Raw request body type:', typeof req.body);
+            console.log(chalk.green(MODULE), 'Raw request body:', req.body);
+            
+            const newSettings = req.body as Partial<SettingsType>;
             
             // Log the received settings for debugging
             console.log(chalk.green(MODULE), 'New settings received:', JSON.stringify(newSettings));
             console.log(chalk.green(MODULE), 'Current settings before update:', JSON.stringify(settings));
             
-            // Ensure we're extracting the dropbox keys correctly
-            if (newSettings.hasOwnProperty('dropboxAppKey')) {
-                console.log(chalk.green(MODULE), `Received App Key of length: ${newSettings.dropboxAppKey?.length}`);
-            }
-            if (newSettings.hasOwnProperty('dropboxAppSecret')) {
-                console.log(chalk.green(MODULE), `Received App Secret of length: ${newSettings.dropboxAppSecret?.length}`);
-            }
-            
-            // Update settings - use a different approach to ensure all properties are updated
-            for (const key in newSettings) {
-                if (newSettings.hasOwnProperty(key) && settings.hasOwnProperty(key)) {
-                    settings[key] = newSettings[key] as any; // Type assertion needed since we've narrowed that this is a valid key
+            // Ensure we're extracting the dropbox keys correctly - with defensive checks
+            if (newSettings && typeof newSettings === 'object') {
+                if (newSettings.hasOwnProperty('dropboxAppKey')) {
+                    console.log(chalk.green(MODULE), `Received App Key of length: ${newSettings.dropboxAppKey?.length}`);
                 }
+                if (newSettings.hasOwnProperty('dropboxAppSecret')) {
+                    console.log(chalk.green(MODULE), `Received App Secret of length: ${newSettings.dropboxAppSecret?.length}`);
+                }
+                
+                // Update settings - use a different approach to ensure all properties are updated
+                for (const key in newSettings) {
+                    if (newSettings.hasOwnProperty(key) && settings.hasOwnProperty(key)) {
+                        settings[key] = newSettings[key] as any; // Type assertion needed since we've narrowed that this is a valid key
+                    }
+                }
+                
+                // Log the updated settings
+                console.log(chalk.green(MODULE), 'Settings after update:', JSON.stringify(settings));
+                
+                // Save settings to file
+                await saveSettingsToFile();
+                
+                // Read back the saved file to verify contents
+                try {
+                    const savedContent = fs.readFileSync(settingsFilePath, 'utf8');
+                    console.log(chalk.green(MODULE), 'Saved settings file content:', savedContent);
+                } catch (readError) {
+                    console.error(chalk.red(MODULE), 'Error reading back saved settings:', readError);
+                }
+                
+                // Update sync interval if needed
+                if (settings.autoSync) {
+                    setupSyncInterval();
+                } else if (syncIntervalId) {
+                    clearInterval(syncIntervalId);
+                    syncIntervalId = null;
+                }
+                
+                return res.status(200).json({ success: true });
+            } else {
+                console.error(chalk.red(MODULE), 'New settings is not a valid object:', newSettings);
+                return res.status(400).json({ 
+                    success: false, 
+                    error: 'Invalid settings format. Expected JSON object.' 
+                });
             }
-            
-            // Log the updated settings
-            console.log(chalk.green(MODULE), 'Settings after update:', JSON.stringify(settings));
-            
-            // Save settings to file
-            await saveSettingsToFile();
-            
-            // Read back the saved file to verify contents
-            try {
-                const savedContent = fs.readFileSync(settingsFilePath, 'utf8');
-                console.log(chalk.green(MODULE), 'Saved settings file content:', savedContent);
-            } catch (readError) {
-                console.error(chalk.red(MODULE), 'Error reading back saved settings:', readError);
-            }
-            
-            // Update sync interval if needed
-            if (settings.autoSync) {
-                setupSyncInterval();
-            } else if (syncIntervalId) {
-                clearInterval(syncIntervalId);
-                syncIntervalId = null;
-            }
-            
-            res.status(200).json({ success: true });
         } catch (error) {
             console.error(chalk.red(MODULE), 'Error processing settings:', error);
-            res.status(500).json({ success: false, error: 'Internal server error' });
+            // Return more detailed error information
+            if (error instanceof Error) {
+                return res.status(500).json({ 
+                    success: false, 
+                    error: `Internal server error: ${error.message}`,
+                    stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined
+                });
+            }
+            return res.status(500).json({ success: false, error: 'Internal server error' });
         }
     });
     
@@ -434,6 +499,33 @@ async function init(router: Router) {
             console.error(chalk.red(MODULE), 'Error during logout:', error);
             res.status(500).json({ success: false, error: 'Error during logout' });
         }
+    });
+    
+    // Add a test endpoint for debugging request handling
+    router.post('/echo', (req: Request, res: Response) => {
+        console.log(chalk.blue(MODULE), '=== DEBUG ECHO ENDPOINT ===');
+        console.log(chalk.blue(MODULE), 'Request method:', req.method);
+        console.log(chalk.blue(MODULE), 'Request path:', req.path);
+        console.log(chalk.blue(MODULE), 'Request headers:', JSON.stringify(req.headers));
+        console.log(chalk.blue(MODULE), 'Request body exists:', !!req.body);
+        console.log(chalk.blue(MODULE), 'Request body type:', typeof req.body);
+        
+        if (req.body) {
+            console.log(chalk.blue(MODULE), 'Request body keys:', Object.keys(req.body));
+            console.log(chalk.blue(MODULE), 'Request body:', JSON.stringify(req.body));
+        }
+        
+        return res.status(200).json({
+            success: true,
+            received: {
+                headers: req.headers,
+                body: req.body,
+                query: req.query,
+                method: req.method,
+                path: req.path
+            },
+            message: 'Echo endpoint for debugging'
+        });
     });
     
     // Setup initial sync interval if auto sync is enabled
