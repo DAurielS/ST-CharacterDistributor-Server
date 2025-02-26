@@ -5,7 +5,11 @@ import * as path from 'path';
 import axios from 'axios';
 import { nanoid } from 'nanoid';
 import fetch from 'node-fetch';
-import { readMetadata } from 'png-metadata';
+// import { readMetadata } from 'png-metadata';
+// Use CommonJS require instead of import
+const pngMetadata = require('png-metadata');
+// Import our custom PNG utilities
+import { extractPngMetadata, extractCharacterData } from '../utils/pngUtils';
 
 // Shared module variables
 const MODULE = '[Character-Distributor-Dropbox]';
@@ -404,9 +408,13 @@ export async function uploadCharacter(characterPath: string, excludeTags: string
             // For PNG character cards, we need to extract the embedded JSON to check tags
             console.log(chalk.blue(MODULE), `Processing PNG character card: ${filename}`);
             
+            let characterData = null;
+            let extractionMethod = '';
+            
             try {
-                // Extract metadata from PNG
-                const metadata = readMetadata(characterContent);
+                // Extract metadata from PNG using CommonJS import
+                const metadata = pngMetadata.readMetadata(characterContent);
+                extractionMethod = 'png-metadata library';
                 
                 // Look for the 'chara' field which contains the base64-encoded character data
                 const charaField = metadata.find((field: any) => field.keyword === 'chara');
@@ -417,62 +425,56 @@ export async function uploadCharacter(characterPath: string, excludeTags: string
                         const jsonStr = Buffer.from(charaField.text, 'base64').toString('utf8');
                         
                         // Parse the JSON data
-                        const characterData = JSON.parse(jsonStr);
-                        
-                        // Check if the character has any excluded tags
-                        if (characterData.tags) {
-                            const tags = Array.isArray(characterData.tags) 
-                                ? characterData.tags 
-                                : characterData.tags.split(',').map((tag: string) => tag.trim());
-                                
-                            if (tags.some((tag: string) => excludeTags.includes(tag))) {
-                                console.log(chalk.yellow(MODULE), 'Skipping character with excluded tag:', filename);
-                                return false;
-                            }
-                        }
+                        characterData = JSON.parse(jsonStr);
                     } catch (jsonError) {
                         console.error(chalk.yellow(MODULE), `Error processing JSON for ${filename}:`, jsonError);
-                        // If we can't parse the JSON, still upload the file
                     }
                 } else {
                     // Try alternative field names (some cards might use different metadata field names)
                     const alternativeFields = ['character', 'tavern', 'card', 'data'];
-                    let found = false;
                     
                     for (const fieldName of alternativeFields) {
                         const field = metadata.find((f: any) => f.keyword === fieldName);
                         if (field && field.text) {
                             try {
                                 const jsonStr = Buffer.from(field.text, 'base64').toString('utf8');
-                                const characterData = JSON.parse(jsonStr);
-                                
-                                // Check if the character has any excluded tags
-                                if (characterData.tags) {
-                                    const tags = Array.isArray(characterData.tags) 
-                                        ? characterData.tags 
-                                        : characterData.tags.split(',').map((tag: string) => tag.trim());
-                                    
-                                    if (tags.some((tag: string) => excludeTags.includes(tag))) {
-                                        console.log(chalk.yellow(MODULE), 'Skipping character with excluded tag:', filename);
-                                        return false;
-                                    }
-                                }
-                                
-                                found = true;
-                                break;
+                                characterData = JSON.parse(jsonStr);
+                                if (characterData) break;
                             } catch (err) {
                                 // Continue to next field
                             }
                         }
                     }
-                    
-                    if (!found) {
-                        console.log(chalk.yellow(MODULE), `No character data found in ${filename} metadata, uploading anyway`);
-                    }
                 }
             } catch (metadataError) {
-                console.error(chalk.yellow(MODULE), `Error extracting metadata from ${filename}:`, metadataError);
-                // Continue with upload even if we can't extract metadata
+                console.error(chalk.yellow(MODULE), `Error using png-metadata library for ${filename}:`, metadataError);
+                
+                // Fallback to our custom PNG metadata extractor
+                try {
+                    console.log(chalk.blue(MODULE), `Falling back to custom PNG extractor for ${filename}`);
+                    characterData = extractCharacterData(characterContent);
+                    extractionMethod = 'custom extractor';
+                } catch (customError) {
+                    console.error(chalk.red(MODULE), `Custom extractor also failed for ${filename}:`, customError);
+                }
+            }
+            
+            // Check if the character has any excluded tags
+            if (characterData && characterData.tags) {
+                const tags = Array.isArray(characterData.tags) 
+                    ? characterData.tags 
+                    : characterData.tags.split(',').map((tag: string) => tag.trim());
+                    
+                if (tags.some((tag: string) => excludeTags.includes(tag))) {
+                    console.log(chalk.yellow(MODULE), `Skipping character with excluded tag (using ${extractionMethod}):`, filename);
+                    return false;
+                }
+            }
+            
+            if (!characterData) {
+                console.log(chalk.yellow(MODULE), `No character data found in ${filename} metadata, uploading anyway`);
+            } else {
+                console.log(chalk.green(MODULE), `Successfully processed character metadata (using ${extractionMethod}) for: ${filename}`);
             }
         } else if (filename.endsWith('.json')) {
             // For plain JSON files, directly parse the content

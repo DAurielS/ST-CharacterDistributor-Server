@@ -6,7 +6,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import express from 'express';
 import axios from 'axios';
-import { readMetadata } from 'png-metadata';
+// import { readMetadata } from 'png-metadata';
+// Use CommonJS require instead of import
+const pngMetadata = require('png-metadata');
+// Import our custom PNG utilities
+import { extractPngMetadata, extractCharacterData } from './utils/pngUtils';
 
 const MODULE = '[Character-Distributor]';
 
@@ -533,9 +537,14 @@ async function init(router: Router) {
                         // Read the PNG file as buffer
                         const fileBuffer = fs.readFileSync(filePath);
                         
+                        // First try using the png-metadata library
+                        let characterData = null;
+                        let extractionMethod = '';
+                        
                         try {
-                            // Extract metadata from PNG
-                            const metadata = readMetadata(fileBuffer);
+                            // Extract metadata from PNG using CommonJS import
+                            const metadata = pngMetadata.readMetadata(fileBuffer);
+                            extractionMethod = 'png-metadata library';
                             
                             // Look for the 'chara' field which contains the base64-encoded character data
                             const charaField = metadata.find((field: any) => field.keyword === 'chara');
@@ -545,54 +554,51 @@ async function init(router: Router) {
                                 const jsonStr = Buffer.from(charaField.text, 'base64').toString('utf8');
                                 
                                 // Parse the JSON data
-                                const characterData = JSON.parse(jsonStr);
-                                
-                                // Extract relevant information
-                                const character = {
-                                    name: characterData.name || characterData.char_name || 'Unknown Character',
-                                    avatar_url: file, // Use the PNG filename itself as the avatar URL
-                                    filename: file,
-                                    // Add any additional fields needed by the UI
-                                };
-                                
-                                characters.push(character);
-                                successCount++;
-                                console.log(chalk.green(MODULE), `Successfully processed character: ${character.name}`);
+                                characterData = JSON.parse(jsonStr);
                             } else {
                                 // Try alternative field names (some cards might use different metadata field names)
                                 const alternativeFields = ['character', 'tavern', 'card', 'data'];
-                                let found = false;
                                 
                                 for (const fieldName of alternativeFields) {
                                     const field = metadata.find((f: any) => f.keyword === fieldName);
                                     if (field && field.text) {
                                         try {
                                             const jsonStr = Buffer.from(field.text, 'base64').toString('utf8');
-                                            const characterData = JSON.parse(jsonStr);
-                                            
-                                            const character = {
-                                                name: characterData.name || characterData.char_name || 'Unknown Character',
-                                                avatar_url: file,
-                                                filename: file,
-                                            };
-                                            
-                                            characters.push(character);
-                                            successCount++;
-                                            console.log(chalk.green(MODULE), `Successfully processed character from alternative field '${fieldName}': ${character.name}`);
-                                            found = true;
-                                            break;
+                                            characterData = JSON.parse(jsonStr);
+                                            if (characterData) break;
                                         } catch (err) {
                                             // Continue to next field
                                         }
                                     }
                                 }
-                                
-                                if (!found) {
-                                    console.log(chalk.yellow(MODULE), `No character data found in ${file} metadata`);
-                                }
                             }
                         } catch (metadataError) {
-                            console.error(chalk.yellow(MODULE), `Error extracting metadata from ${file}:`, metadataError);
+                            console.error(chalk.yellow(MODULE), `Error using png-metadata library for ${file}:`, metadataError);
+                            
+                            // Fallback to our custom PNG metadata extractor
+                            try {
+                                console.log(chalk.blue(MODULE), `Falling back to custom PNG extractor for ${file}`);
+                                characterData = extractCharacterData(fileBuffer);
+                                extractionMethod = 'custom extractor';
+                            } catch (customError) {
+                                console.error(chalk.red(MODULE), `Custom extractor also failed for ${file}:`, customError);
+                            }
+                        }
+                        
+                        // If we found character data with either method, add it to our list
+                        if (characterData) {
+                            const character = {
+                                name: characterData.name || characterData.char_name || 'Unknown Character',
+                                avatar_url: file, // Use the PNG filename itself as the avatar URL
+                                filename: file,
+                                // Add any additional fields needed by the UI
+                            };
+                            
+                            characters.push(character);
+                            successCount++;
+                            console.log(chalk.green(MODULE), `Successfully processed character (using ${extractionMethod}): ${character.name}`);
+                        } else {
+                            console.log(chalk.yellow(MODULE), `No character data found in ${file} metadata`);
                         }
                     } catch (fileError) {
                         console.error(chalk.yellow(MODULE), `Error reading character file ${file}:`, fileError);
