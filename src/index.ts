@@ -5,6 +5,7 @@ import { initializeDropbox, performSync as runSync, generateShareLink as createS
 import * as fs from 'fs';
 import * as path from 'path';
 import express from 'express';
+import axios from 'axios';
 
 const MODULE = '[Character-Distributor]';
 
@@ -493,6 +494,26 @@ async function init(router: Router) {
         }
     });
     
+    // Set up characters list proxy endpoint
+    router.get('/characters', async (req: Request, res: Response) => {
+        try {
+            console.log(chalk.green(MODULE), 'Fetching character list');
+            
+            // Forward request to SillyTavern's characters API
+            const response = await axios.get('http://localhost:8000/api/characters/list', {
+                headers: req.headers as Record<string, string>
+            });
+            
+            res.status(200).json(response.data);
+        } catch (error) {
+            console.error(chalk.red(MODULE), 'Error fetching character list:', error);
+            res.status(500).json({ 
+                success: false, 
+                error: 'Error fetching character list' 
+            });
+        }
+    });
+    
     // Set up sync endpoint
     router.post('/sync', async (req: Request, res: Response) => {
         if (syncStatus.running) {
@@ -631,8 +652,14 @@ function setupSyncInterval() {
  * Perform sync operation
  */
 async function performSync() {
+    // Use SillyTavern's character directory
+    // SillyTavern typically stores characters in "public/characters" or "data/default-user/characters"
+    const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
+    const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
+    
+    console.log(chalk.green(MODULE), `Using characters directory: ${charactersDir}`);
+    
     // Call the sync function from Dropbox client
-    const charactersDir = process.env.CHARACTERS_DIR || './characters';
     return await runSync(charactersDir, settings.excludeTags);
 }
 
