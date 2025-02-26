@@ -111,7 +111,7 @@ export async function validateDropboxCredentials(token: string, appKey: string, 
                     'Authorization': `Bearer ${token}`,
                     'Content-Type': 'application/json'
                 },
-                data: {}, // Add empty JSON object as required by Dropbox API
+                data: null, // Use null as required by Dropbox API, not an empty object
                 timeout: 5000 // 5 second timeout
             });
             
