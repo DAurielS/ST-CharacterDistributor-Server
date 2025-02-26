@@ -7,11 +7,56 @@ import { nanoid } from 'nanoid';
 
 const MODULE = '[Character-Distributor-Dropbox]';
 
+// Define token file path
+const dataDir = process.env.DATA_DIR || './data';
+const tokenFilePath = path.join(dataDir, 'character-distributor-token.json');
+
 // Dropbox client instance
 let dropboxClient: Dropbox | null = null;
 
 // Access token
 let accessToken: string | null = null;
+
+/**
+ * Save auth token to file
+ */
+async function saveAuthTokenToFile(token: string): Promise<void> {
+    try {
+        // Ensure directory exists
+        const dir = path.dirname(tokenFilePath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        
+        // Write token to file
+        fs.writeFileSync(tokenFilePath, JSON.stringify({ accessToken: token }, null, 2), 'utf8');
+        console.log(chalk.green(MODULE), 'Auth token saved to file');
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error saving auth token to file:', error);
+        throw error;
+    }
+}
+
+/**
+ * Load auth token from file
+ */
+async function loadAuthTokenFromFile(): Promise<string | null> {
+    try {
+        if (fs.existsSync(tokenFilePath)) {
+            const data = fs.readFileSync(tokenFilePath, 'utf8');
+            const tokenData = JSON.parse(data);
+            
+            if (tokenData.accessToken) {
+                console.log(chalk.green(MODULE), 'Auth token loaded from file');
+                return tokenData.accessToken;
+            }
+        }
+        return null;
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error loading auth token from file:', error);
+        return null;
+    }
+}
 
 /**
  * Initialize the Dropbox client with the provided access token
@@ -54,6 +99,9 @@ export async function initializeDropbox(token: string, appKey: string, appSecret
             console.log(chalk.green(MODULE), 'Testing connection by fetching account info...');
             const account = await dropboxClient.usersGetCurrentAccount();
             console.log(chalk.green(MODULE), 'Successfully connected to Dropbox as', account?.result?.name?.display_name || 'Unknown User');
+            
+            // If we get here without error, save the token for future use
+            await saveAuthTokenToFile(token);
         } catch (accountError: any) {
             console.error(chalk.red(MODULE), 'Error fetching account info:', accountError?.message || 'Unknown error');
             console.error(chalk.red(MODULE), 'Error status:', accountError?.status || 'Unknown status');
@@ -80,6 +128,44 @@ export async function initializeDropbox(token: string, appKey: string, appSecret
         console.error(chalk.red(MODULE), 'Error stack:', error?.stack || 'No stack trace');
         dropboxClient = null;
         accessToken = null;
+        return false;
+    }
+}
+
+/**
+ * Try to restore Dropbox client from saved token
+ */
+export async function restoreDropboxClient(appKey: string, appSecret: string): Promise<boolean> {
+    try {
+        const savedToken = await loadAuthTokenFromFile();
+        
+        if (savedToken && appKey && appSecret) {
+            console.log(chalk.green(MODULE), 'Attempting to restore Dropbox client from saved token');
+            return await initializeDropbox(savedToken, appKey, appSecret);
+        }
+        
+        return false;
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error restoring Dropbox client:', error);
+        return false;
+    }
+}
+
+/**
+ * Clear the stored auth token
+ */
+export async function clearAuthToken(): Promise<boolean> {
+    try {
+        if (fs.existsSync(tokenFilePath)) {
+            fs.unlinkSync(tokenFilePath);
+            console.log(chalk.green(MODULE), 'Auth token file deleted');
+        }
+        
+        dropboxClient = null;
+        accessToken = null;
+        return true;
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error clearing auth token:', error);
         return false;
     }
 }

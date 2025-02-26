@@ -1,9 +1,15 @@
 import chalk from 'chalk';
 import { Router, Request, Response } from 'express';
 import { setupApiRoutes } from './api/routes';
-import { initializeDropbox, performSync as runSync, generateShareLink as createShareLink, checkDropboxAuth } from './dropbox/client';
+import { initializeDropbox, performSync as runSync, generateShareLink as createShareLink, checkDropboxAuth, restoreDropboxClient, clearAuthToken } from './dropbox/client';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const MODULE = '[Character-Distributor]';
+
+// Define settings file path
+const dataDir = process.env.DATA_DIR || './data';
+const settingsFilePath = path.join(dataDir, 'character-distributor-settings.json');
 
 let settings = {
     dropboxAppKey: '',
@@ -22,6 +28,47 @@ let syncStatus = {
 let syncIntervalId: ReturnType<typeof setInterval> | null = null;
 
 /**
+ * Save settings to file
+ */
+async function saveSettingsToFile() {
+    try {
+        // Ensure directory exists
+        const dir = path.dirname(settingsFilePath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        
+        // Write settings to file
+        fs.writeFileSync(settingsFilePath, JSON.stringify(settings, null, 2), 'utf8');
+        console.log(chalk.green(MODULE), 'Settings saved to file:', settingsFilePath);
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error saving settings to file:', error);
+    }
+}
+
+/**
+ * Load settings from file
+ */
+async function loadSettingsFromFile() {
+    try {
+        if (fs.existsSync(settingsFilePath)) {
+            const data = fs.readFileSync(settingsFilePath, 'utf8');
+            const loadedSettings = JSON.parse(data);
+            
+            // Update settings with loaded values
+            settings = { ...settings, ...loadedSettings };
+            console.log(chalk.green(MODULE), 'Settings loaded from file:', settingsFilePath);
+            console.log(chalk.green(MODULE), 'App Key configured:', !!settings.dropboxAppKey);
+            console.log(chalk.green(MODULE), 'App Secret configured:', !!settings.dropboxAppSecret);
+        } else {
+            console.log(chalk.yellow(MODULE), 'Settings file not found, using defaults');
+        }
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error loading settings from file:', error);
+    }
+}
+
+/**
  * Clean up function called when plugin exits
  */
 async function exit() {
@@ -36,6 +83,22 @@ async function exit() {
  */
 async function init(router: Router) {
     console.log(chalk.green(MODULE), 'Plugin loaded!');
+    
+    // Load settings from file
+    await loadSettingsFromFile();
+    
+    // Try to restore Dropbox client from saved token
+    if (settings.dropboxAppKey && settings.dropboxAppSecret) {
+        console.log(chalk.green(MODULE), 'Attempting to restore Dropbox authentication...');
+        const restored = await restoreDropboxClient(settings.dropboxAppKey, settings.dropboxAppSecret);
+        if (restored) {
+            console.log(chalk.green(MODULE), 'Successfully restored Dropbox authentication');
+        } else {
+            console.log(chalk.yellow(MODULE), 'No saved Dropbox authentication found or restoration failed');
+        }
+    } else {
+        console.log(chalk.yellow(MODULE), 'Dropbox App Key or Secret not configured, skipping authentication restoration');
+    }
     
     // Set up API routes
     setupApiRoutes(router, settings, syncStatus);
@@ -123,13 +186,16 @@ async function init(router: Router) {
     });
     
     // Set up settings endpoint
-    router.post('/settings', (req: Request, res: Response) => {
+    router.post('/settings', async (req: Request, res: Response) => {
         try {
             const newSettings = req.body;
             console.log(chalk.green(MODULE), 'Received new settings');
             
             // Update settings
             settings = { ...settings, ...newSettings };
+            
+            // Save settings to file
+            await saveSettingsToFile();
             
             // Update sync interval if needed
             if (settings.autoSync) {
@@ -218,6 +284,27 @@ async function init(router: Router) {
         } catch (error) {
             console.error(chalk.red(MODULE), 'Error generating share link:', error);
             res.status(500).json({ success: false, error: 'Internal server error' });
+        }
+    });
+    
+    // Set up logout endpoint
+    router.post('/logout', async (req: Request, res: Response) => {
+        try {
+            console.log(chalk.green(MODULE), 'Logout requested');
+            
+            // Clear the auth token
+            const success = await clearAuthToken();
+            
+            if (success) {
+                res.status(200).json({ success: true });
+                console.log(chalk.green(MODULE), 'Successfully logged out from Dropbox');
+            } else {
+                res.status(500).json({ success: false, error: 'Error during logout' });
+                console.error(chalk.red(MODULE), 'Error during logout');
+            }
+        } catch (error) {
+            console.error(chalk.red(MODULE), 'Error during logout:', error);
+            res.status(500).json({ success: false, error: 'Error during logout' });
         }
     });
     
