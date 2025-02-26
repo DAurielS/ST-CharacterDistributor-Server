@@ -18,25 +18,66 @@ let accessToken: string | null = null;
  */
 export async function initializeDropbox(token: string, appKey: string, appSecret: string): Promise<boolean> {
     try {
+        // Log sanitized info
+        console.log(chalk.green(MODULE), 'Initializing Dropbox client');
+        console.log(chalk.green(MODULE), `Access Token length: ${token?.length || 0}`);
+        console.log(chalk.green(MODULE), `App Key length: ${appKey?.length || 0}`);
+        console.log(chalk.green(MODULE), `App Secret length: ${appSecret?.length || 0}`);
+        
+        if (!token) {
+            console.error(chalk.red(MODULE), 'Access token is missing or empty');
+            return false;
+        }
+        
+        if (!appKey || !appSecret) {
+            console.error(chalk.red(MODULE), 'App key or secret is missing or empty');
+            return false;
+        }
+        
         accessToken = token;
         
         // Initialize Dropbox client
-        dropboxClient = new Dropbox({
-            accessToken: token,
-            clientId: appKey,
-            clientSecret: appSecret
-        });
+        try {
+            dropboxClient = new Dropbox({
+                accessToken: token,
+                clientId: appKey,
+                clientSecret: appSecret
+            });
+            console.log(chalk.green(MODULE), 'Dropbox client instance created');
+        } catch (initError: any) {
+            console.error(chalk.red(MODULE), 'Error creating Dropbox client instance:', initError?.message || 'Unknown error');
+            return false;
+        }
         
         // Test the connection by getting account info
-        const account = await dropboxClient.usersGetCurrentAccount();
-        console.log(chalk.green(MODULE), 'Successfully connected to Dropbox as', account.result.name.display_name);
+        try {
+            console.log(chalk.green(MODULE), 'Testing connection by fetching account info...');
+            const account = await dropboxClient.usersGetCurrentAccount();
+            console.log(chalk.green(MODULE), 'Successfully connected to Dropbox as', account?.result?.name?.display_name || 'Unknown User');
+        } catch (accountError: any) {
+            console.error(chalk.red(MODULE), 'Error fetching account info:', accountError?.message || 'Unknown error');
+            console.error(chalk.red(MODULE), 'Error status:', accountError?.status || 'Unknown status');
+            console.error(chalk.red(MODULE), 'Error details:', accountError?.error || 'No details available');
+            dropboxClient = null;
+            accessToken = null;
+            return false;
+        }
         
         // Create the characters folder if it doesn't exist
-        await ensureCharactersFolder();
+        try {
+            await ensureCharactersFolder();
+            console.log(chalk.green(MODULE), 'Characters folder is ready');
+        } catch (folderError: any) {
+            console.error(chalk.red(MODULE), 'Error with characters folder:', folderError?.message || 'Unknown error');
+            // Don't fail the initialization if folder creation fails
+            // We'll try again during sync
+        }
         
         return true;
-    } catch (error) {
+    } catch (error: any) {
         console.error(chalk.red(MODULE), 'Error initializing Dropbox client:', error);
+        console.error(chalk.red(MODULE), 'Error message:', error?.message || 'No message');
+        console.error(chalk.red(MODULE), 'Error stack:', error?.stack || 'No stack trace');
         dropboxClient = null;
         accessToken = null;
         return false;

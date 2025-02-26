@@ -40,22 +40,85 @@ async function init(router: Router) {
     // Set up API routes
     setupApiRoutes(router, settings, syncStatus);
     
+    // Add diagnostic endpoint
+    router.get('/debug', (req: Request, res: Response) => {
+        try {
+            // Collect diagnostic information
+            const diagnosticInfo = {
+                plugin: {
+                    running: true,
+                    lastSync: syncStatus.lastSync || 'Never',
+                    sharedCharacters: syncStatus.sharedCharacters
+                },
+                settings: {
+                    // Only report if keys are configured, not the actual values
+                    dropboxAppKeyConfigured: !!settings.dropboxAppKey,
+                    dropboxAppSecretConfigured: !!settings.dropboxAppSecret,
+                    autoSync: settings.autoSync,
+                    syncInterval: settings.syncInterval,
+                    excludeTags: settings.excludeTags
+                },
+                dropbox: {
+                    clientInitialized: checkDropboxAuth(),
+                    tokenPresent: checkDropboxAuth()
+                },
+                nodeVersion: process.version,
+                serverUptime: process.uptime()
+            };
+            
+            res.status(200).json(diagnosticInfo);
+        } catch (error) {
+            console.error(chalk.red(MODULE), 'Error generating diagnostic info:', error);
+            res.status(500).json({ success: false, error: 'Error generating diagnostic info' });
+        }
+    });
+    
     // Set up auth endpoint
     router.post('/auth', async (req: Request, res: Response) => {
         try {
             const { accessToken, tokenType, expiresIn } = req.body;
             console.log(chalk.green(MODULE), 'Received Dropbox auth token');
             
-            const success = await initializeDropbox(accessToken, settings.dropboxAppKey, settings.dropboxAppSecret);
-            
-            if (success) {
-                res.status(200).json({ success: true });
-            } else {
-                res.status(400).json({ success: false, error: 'Failed to initialize Dropbox client' });
+            // Check if app key and secret are configured
+            if (!settings.dropboxAppKey || !settings.dropboxAppSecret) {
+                console.error(chalk.red(MODULE), 'Dropbox App Key or Secret not configured');
+                return res.status(400).json({ 
+                    success: false, 
+                    error: 'Dropbox App Key or Secret not configured. Please configure in settings.' 
+                });
             }
-        } catch (error) {
+            
+            // Detailed logging
+            console.log(chalk.green(MODULE), 'Attempting to initialize Dropbox with provided token');
+            console.log(chalk.green(MODULE), `App Key configured: ${!!settings.dropboxAppKey}`);
+            console.log(chalk.green(MODULE), `App Secret configured: ${!!settings.dropboxAppSecret}`);
+            
+            try {
+                const success = await initializeDropbox(accessToken, settings.dropboxAppKey, settings.dropboxAppSecret);
+                
+                if (success) {
+                    res.status(200).json({ success: true });
+                } else {
+                    res.status(400).json({ success: false, error: 'Failed to initialize Dropbox client' });
+                }
+            } catch (dropboxError: any) {
+                // More detailed error logging
+                console.error(chalk.red(MODULE), 'Specific error during Dropbox initialization:', dropboxError);
+                console.error(chalk.red(MODULE), 'Error message:', dropboxError.message);
+                console.error(chalk.red(MODULE), 'Error details:', dropboxError.error || 'No details available');
+                
+                res.status(500).json({ 
+                    success: false, 
+                    error: `Dropbox initialization error: ${dropboxError.message || 'Unknown error'}`
+                });
+            }
+        } catch (error: any) {
             console.error(chalk.red(MODULE), 'Error processing auth token:', error);
-            res.status(500).json({ success: false, error: 'Internal server error' });
+            console.error(chalk.red(MODULE), 'Error details:', error.message || 'No message');
+            res.status(500).json({ 
+                success: false, 
+                error: `Internal server error: ${error.message || 'Unknown error'}`
+            });
         }
     });
     
