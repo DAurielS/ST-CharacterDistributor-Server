@@ -497,37 +497,57 @@ async function init(router: Router) {
     // Set up characters list proxy endpoint
     router.get('/characters', async (req: Request, res: Response) => {
         try {
-            console.log(chalk.green(MODULE), 'Fetching character list');
+            console.log(chalk.green(MODULE), 'Fetching character list from filesystem');
             
-            // Try to forward request to SillyTavern's characters API
+            // Use SillyTavern's character directory - same as in performSync
+            const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
+            const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
+            
+            console.log(chalk.green(MODULE), `Looking for characters in: ${charactersDir}`);
+            
+            // Check if directory exists
+            if (!fs.existsSync(charactersDir)) {
+                console.error(chalk.red(MODULE), `Characters directory does not exist: ${charactersDir}`);
+                return res.status(200).json([]);
+            }
+            
             try {
-                const response = await axios.get('http://localhost:8000/api/characters/list', {
-                    headers: req.headers as Record<string, string>
-                });
+                // Read all files in the directory
+                const files = fs.readdirSync(charactersDir);
+                console.log(chalk.green(MODULE), `Found ${files.length} files in characters directory`);
                 
-                // Ensure we're returning an array
-                if (Array.isArray(response.data)) {
-                    console.log(chalk.green(MODULE), `Found ${response.data.length} characters from SillyTavern`);
-                    return res.status(200).json(response.data);
-                } else if (response.data && typeof response.data === 'object') {
-                    // Some APIs might wrap arrays in objects
-                    const possibleArray = Object.values(response.data).find(val => Array.isArray(val));
-                    if (possibleArray) {
-                        console.log(chalk.green(MODULE), `Found ${possibleArray.length} characters in response object`);
-                        return res.status(200).json(possibleArray);
+                // Process each JSON file to extract character information
+                const characters = [];
+                
+                for (const file of files) {
+                    // Only process JSON files
+                    if (!file.endsWith('.json')) continue;
+                    
+                    try {
+                        const filePath = path.join(charactersDir, file);
+                        const fileContents = fs.readFileSync(filePath, 'utf8');
+                        const characterData = JSON.parse(fileContents);
+                        
+                        // Extract relevant information - handle different possible formats
+                        const character = {
+                            name: characterData.name || characterData.char_name || 'Unknown Character',
+                            avatar_url: characterData.avatar || characterData.avatar_url || '',
+                            // You can add more fields as needed by the UI
+                            filename: file
+                        };
+                        
+                        characters.push(character);
+                    } catch (fileError) {
+                        console.error(chalk.yellow(MODULE), `Error processing character file ${file}:`, fileError);
+                        // Continue with other files
                     }
                 }
                 
-                // If we get here, the format wasn't recognized - return empty array
-                console.warn(chalk.yellow(MODULE), 'SillyTavern response format not recognized, returning empty array');
-                return res.status(200).json([]);
+                console.log(chalk.green(MODULE), `Successfully processed ${characters.length} character files`);
+                return res.status(200).json(characters);
                 
-            } catch (stError: any) {
-                // If we can't reach SillyTavern, log the error and return an empty array
-                console.error(chalk.red(MODULE), 'Error connecting to SillyTavern API:', stError.message);
-                
-                // Return an empty array instead of an error
-                // This ensures the UI doesn't break when trying to use forEach
+            } catch (fsError) {
+                console.error(chalk.red(MODULE), 'Error reading characters directory:', fsError);
                 return res.status(200).json([]);
             }
         } catch (error: any) {
