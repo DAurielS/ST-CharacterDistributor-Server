@@ -191,4 +191,11 @@ export async function performSync(charactersDir: string, excludeTags: string[]):
         console.error(chalk.red(MODULE), 'Error during sync:', error);
         return { success: false, count: 0 };
     }
+}
+
+/**
+ * Check if the Dropbox client is authenticated
+ */
+export function checkDropboxAuth(): boolean {
+    return dropboxClient !== null && accessToken !== null;
 } 

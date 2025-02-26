@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { Router, Request, Response } from 'express';
 import { setupApiRoutes } from './api/routes';
-import { initializeDropbox, performSync as runSync, generateShareLink as createShareLink } from './dropbox/client';
+import { initializeDropbox, performSync as runSync, generateShareLink as createShareLink, checkDropboxAuth } from './dropbox/client';
 
 const MODULE = '[Character-Distributor]';
 
@@ -85,11 +85,25 @@ async function init(router: Router) {
     
     // Set up status endpoint
     router.get('/status', (req: Request, res: Response) => {
-        res.status(200).json({
-            running: true,
-            lastSync: syncStatus.lastSync || 'Never',
-            sharedCharacters: syncStatus.sharedCharacters
-        });
+        try {
+            // Get authentication status from dropbox client
+            // We access the imported function to check if dropboxClient is initialized
+            const isAuthenticated = checkDropboxAuth();
+            
+            res.status(200).json({
+                running: true,
+                lastSync: syncStatus.lastSync || 'Never',
+                sharedCharacters: syncStatus.sharedCharacters,
+                authenticated: isAuthenticated
+            });
+        } catch (error) {
+            console.error(chalk.red(MODULE), 'Error checking status:', error);
+            res.status(500).json({ 
+                running: true, 
+                error: 'Error checking status', 
+                authenticated: false 
+            });
+        }
     });
     
     // Set up sync endpoint
