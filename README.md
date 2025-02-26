@@ -45,10 +45,27 @@ The Character Distributor consists of two components:
 
 ### Step 3: Install Server Plugin
 
+Find the config.yaml file in your SillyTavern directory and change enableServerPlugins (usually around line 80~90) to true.
+```
+enableServerPlugins: true
+```
+
+#### As a ZIP:
 1. Download the server plugin from: `https://github.com/DAurielS/ST-CharacterDistributor-Server`
 2. Extract the contents to your SillyTavern plugins directory:
    ```
    YOUR_SILLYTAVERN_DIRECTORY/plugins/
+   ```
+3. Restart SillyTavern with the plugins system enabled
+
+#### With Git:
+1. Navigate to your SillyTavern plugins directory:
+   ```
+   YOUR_SILLYTAVERN_DIRECTORY/plugins/
+   ```
+2. Clone the repository:
+   ```
+   git clone https://github.com/DAurielS/ST-CharacterDistributor-Server.git
    ```
 3. Restart SillyTavern with the plugins system enabled
 
@@ -63,6 +80,7 @@ The Character Distributor consists of two components:
 4. Click "Save Settings"
 5. Authenticate with Dropbox by clicking the "Authenticate with Dropbox" button
 6. Once authenticated, the status will show "Authenticated"
+7. This may require you to refresh the page
 
 ## Usage
 
