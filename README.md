@@ -122,8 +122,10 @@ If characters aren't being detected properly:
 
 If the server plugin shows as "Not running":
 1. Verify the plugin is installed in the correct directory
+```
+YOUR_SILLYTAVERN_DIRECTORY/plugins/
+```
 2. Check SillyTavern logs for plugin loading errors
-3. Restart SillyTavern with the --plugins flag
 
 ## Development
 
