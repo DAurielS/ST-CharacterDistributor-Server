@@ -1,4 +1,4 @@
-import { Dropbox } from 'dropbox';
+import { Dropbox, DropboxAuth, files } from 'dropbox';
 import chalk from 'chalk';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -24,6 +24,7 @@ let dropboxClient: Dropbox | null = null;
 // Access token
 let accessToken: string | null = null;
 let refreshToken: string | null = null;
+let tokenExpirationTime: number | null = null;
 
 // Shared characters count - for stats
 let sharedCharactersCount = 0;
@@ -31,7 +32,7 @@ let sharedCharactersCount = 0;
 /**
  * Save auth token to file
  */
-async function saveAuthTokenToFile(token: string): Promise<void> {
+async function saveAuthTokenToFile(token: string, refreshTkn?: string, expiresIn?: number): Promise<void> {
     try {
         // Ensure directory exists
         const dir = path.dirname(tokenFilePath);
@@ -39,11 +40,20 @@ async function saveAuthTokenToFile(token: string): Promise<void> {
             fs.mkdirSync(dir, { recursive: true });
         }
         
-        // Write token to file
-        fs.writeFileSync(tokenFilePath, JSON.stringify({ accessToken: token }, null, 2), 'utf8');
-        console.log(chalk.green(MODULE), 'Auth token saved to file');
+        // Calculate expiration time if provided
+        const expirationTime = expiresIn ? Date.now() + (expiresIn * 1000) : null;
+        
+        // Write tokens to file
+        const tokenData = {
+            accessToken: token,
+            refreshToken: refreshTkn || null,
+            expirationTime: expirationTime
+        };
+        
+        fs.writeFileSync(tokenFilePath, JSON.stringify(tokenData, null, 2), 'utf8');
+        console.log(chalk.green(MODULE), 'Auth tokens saved to file');
     } catch (error) {
-        console.error(chalk.red(MODULE), 'Error saving auth token to file:', error);
+        console.error(chalk.red(MODULE), 'Error saving auth tokens to file:', error);
         throw error;
     }
 }
@@ -51,21 +61,25 @@ async function saveAuthTokenToFile(token: string): Promise<void> {
 /**
  * Load auth token from file
  */
-async function loadAuthTokenFromFile(): Promise<string | null> {
+async function loadAuthTokenFromFile(): Promise<{accessToken: string | null, refreshToken: string | null, expirationTime: number | null}> {
     try {
         if (fs.existsSync(tokenFilePath)) {
             const data = fs.readFileSync(tokenFilePath, 'utf8');
             const tokenData = JSON.parse(data);
             
             if (tokenData.accessToken) {
-                console.log(chalk.green(MODULE), 'Auth token loaded from file');
-                return tokenData.accessToken;
+                console.log(chalk.green(MODULE), 'Auth tokens loaded from file');
+                return {
+                    accessToken: tokenData.accessToken,
+                    refreshToken: tokenData.refreshToken || null,
+                    expirationTime: tokenData.expirationTime || null
+                };
             }
         }
-        return null;
+        return { accessToken: null, refreshToken: null, expirationTime: null };
     } catch (error) {
-        console.error(chalk.red(MODULE), 'Error loading auth token from file:', error);
-        return null;
+        console.error(chalk.red(MODULE), 'Error loading auth tokens from file:', error);
+        return { accessToken: null, refreshToken: null, expirationTime: null };
     }
 }
 
@@ -142,6 +156,10 @@ export async function validateDropboxCredentials(token: string, appKey: string, 
             console.error(chalk.red(MODULE), 'Response data:', JSON.stringify(apiError?.response?.data));
             
             if (apiError?.response?.status === 401) {
+                // Check if the error is specifically an expired token
+                if (apiError?.response?.data?.error?.['.tag'] === 'expired_access_token') {
+                    return { valid: false, message: 'Access token has expired, refresh required' };
+                }
                 return { valid: false, message: 'Invalid or expired access token' };
             } else if (apiError?.response?.status === 400) {
                 return { valid: false, message: 'Bad request - token may be malformed' };
@@ -159,9 +177,89 @@ export async function validateDropboxCredentials(token: string, appKey: string, 
 }
 
 /**
+ * Refresh access token using refresh token
+ */
+async function refreshAccessToken(appKey: string, appSecret: string): Promise<boolean> {
+    try {
+        if (!refreshToken) {
+            console.error(chalk.red(MODULE), 'No refresh token available to refresh access token');
+            return false;
+        }
+
+        console.log(chalk.blue(MODULE), 'Attempting to refresh access token...');
+        
+        // Create form data for token refresh
+        const formData = new URLSearchParams();
+        formData.append('grant_type', 'refresh_token');
+        formData.append('refresh_token', refreshToken);
+        formData.append('client_id', appKey);
+        formData.append('client_secret', appSecret);
+        
+        // Call Dropbox OAuth API to refresh the token
+        const response = await axios({
+            method: 'post',
+            url: 'https://api.dropbox.com/oauth2/token',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            data: formData.toString(),
+            timeout: 10000 // 10 second timeout
+        });
+        
+        if (response.status === 200 && response.data && response.data.access_token) {
+            // Store the new access token
+            accessToken = response.data.access_token;
+            
+            // Update the refresh token if a new one was provided
+            if (response.data.refresh_token) {
+                refreshToken = response.data.refresh_token;
+            }
+            
+            // Update expiration time if provided
+            if (response.data.expires_in) {
+                tokenExpirationTime = Date.now() + (response.data.expires_in * 1000);
+            }
+            
+            console.log(chalk.green(MODULE), 'Successfully refreshed access token');
+            // Use non-null assertion since we know accessToken is set above
+            console.log(chalk.green(MODULE), `New token length: ${accessToken!.length}`);
+            console.log(chalk.green(MODULE), `Expires in: ${response.data.expires_in || 'unknown'} seconds`);
+            
+            // Save the refreshed tokens - we know accessToken is not null here
+            await saveAuthTokenToFile(
+                accessToken as string, 
+                refreshToken || undefined, 
+                response.data.expires_in
+            );
+            
+            // Reinitialize the Dropbox client with the new token
+            dropboxClient = new Dropbox({
+                accessToken: accessToken as string,
+                clientId: appKey,
+                clientSecret: appSecret,
+                fetch: fetch
+            });
+            
+            return true;
+        } else {
+            console.error(chalk.red(MODULE), 'Failed to refresh access token, unexpected response:', response.status);
+            console.error(chalk.red(MODULE), 'Response data:', JSON.stringify(response.data));
+            return false;
+        }
+    } catch (error: any) {
+        console.error(chalk.red(MODULE), 'Error refreshing access token:', error.message);
+        if (error.response) {
+            console.error(chalk.red(MODULE), 'Response status:', error.response.status);
+            console.error(chalk.red(MODULE), 'Response data:', JSON.stringify(error.response.data));
+        }
+        return false;
+    }
+}
+
+/**
  * Initialize the Dropbox client with the provided access token
  */
-export async function initializeDropbox(token: string, appKey: string, appSecret: string): Promise<boolean> {
+export async function initializeDropbox(token: string, appKey: string, appSecret: string, refresh_token?: string, expires_in?: number): Promise<boolean> {
     try {
         // Log sanitized info
         console.log(chalk.green(MODULE), 'Initializing Dropbox client');
@@ -169,6 +267,7 @@ export async function initializeDropbox(token: string, appKey: string, appSecret
         console.log(chalk.green(MODULE), `Access Token first/last 5 chars: ${token?.substring(0, 5)}...${token?.slice(-5)}`);
         console.log(chalk.green(MODULE), `App Key length: ${appKey?.length || 0}`);
         console.log(chalk.green(MODULE), `App Secret length: ${appSecret?.length || 0}`);
+        console.log(chalk.green(MODULE), `Refresh Token provided: ${!!refresh_token}`);
         
         // Validate inputs
         if (!token) {
@@ -187,6 +286,18 @@ export async function initializeDropbox(token: string, appKey: string, appSecret
         }
         
         accessToken = token;
+        
+        // Store refresh token if provided
+        if (refresh_token) {
+            refreshToken = refresh_token;
+            console.log(chalk.green(MODULE), `Refresh token stored, length: ${refresh_token.length}`);
+        }
+        
+        // Store expiration time if provided
+        if (expires_in) {
+            tokenExpirationTime = Date.now() + (expires_in * 1000);
+            console.log(chalk.green(MODULE), `Token expiration set to: ${new Date(tokenExpirationTime).toISOString()}`);
+        }
         
         // Initialize Dropbox client with detailed error handling
         let clientCreationSuccess = false;
@@ -252,7 +363,7 @@ export async function initializeDropbox(token: string, appKey: string, appSecret
                             (account.result as any)?.name?.display_name || 'Unknown User' : 'Unknown User');
                     
                     // If we get here without error, save the token for future use
-                    await saveAuthTokenToFile(token);
+                    await saveAuthTokenToFile(token, refreshToken || undefined, expires_in);
                     return true;
                 } catch (accountError: any) {
                     console.error(chalk.red(MODULE), `Error fetching account info (attempt ${retryAttempt + 1}/${maxRetries + 1}):`);
@@ -272,7 +383,20 @@ export async function initializeDropbox(token: string, appKey: string, appSecret
                     // Check specific error types for Dropbox
                     if (accountError?.status === 401) {
                         console.error(chalk.red(MODULE), 'Authentication failed: Invalid access token');
-                        break; // Don't retry on auth failure
+                        
+                        // Check if this is an expired token error that can be refreshed
+                        if (accountError?.error?.['.tag'] === 'expired_access_token' && refreshToken) {
+                            console.log(chalk.yellow(MODULE), 'Token expired. Attempting to refresh...');
+                            const refreshed = await refreshAccessToken(appKey, appSecret);
+                            if (refreshed) {
+                                console.log(chalk.green(MODULE), 'Token refreshed successfully. Continuing...');
+                                continue; // Skip retry count increment and try again with refreshed token
+                            } else {
+                                console.error(chalk.red(MODULE), 'Failed to refresh token');
+                            }
+                        }
+                        
+                        break; // Don't retry on auth failure unless token was refreshed above
                     }
                     
                     if (accountError?.status === 429) {
@@ -298,41 +422,54 @@ export async function initializeDropbox(token: string, appKey: string, appSecret
             
             // If we're here, all retries failed
             console.error(chalk.red(MODULE), 'All attempts to connect to Dropbox failed');
-            dropboxClient = null;
-            accessToken = null;
-            return false;
         }
         
-        // If client creation failed, we have nothing more to do
         return false;
     } catch (error: any) {
-        // Unexpected top-level error
-        console.error(chalk.red(MODULE), 'Unexpected error initializing Dropbox client:');
-        console.error(chalk.red(MODULE), 'Error message:', error?.message || 'No message');
-        console.error(chalk.red(MODULE), 'Error name:', error?.name || 'Unknown error type');
-        console.error(chalk.red(MODULE), 'Error stack:', error?.stack || 'No stack trace');
-        
-        // Reset state
-        dropboxClient = null;
-        accessToken = null;
+        console.error(chalk.red(MODULE), 'Unexpected error during Dropbox initialization:', error);
         return false;
     }
 }
 
 /**
- * Try to restore Dropbox client from saved token
+ * Restore Dropbox client from previously saved token
  */
 export async function restoreDropboxClient(appKey: string, appSecret: string): Promise<boolean> {
     try {
-        const savedToken = await loadAuthTokenFromFile();
+        console.log(chalk.green(MODULE), 'Attempting to restore Dropbox client from saved token');
         
-        if (savedToken && appKey && appSecret) {
-            console.log(chalk.green(MODULE), 'Attempting to restore Dropbox client from saved token');
-            return await initializeDropbox(savedToken, appKey, appSecret);
+        // Load token from file
+        const { accessToken: savedToken, refreshToken: savedRefreshToken, expirationTime: savedExpirationTime } = await loadAuthTokenFromFile();
+        
+        if (!savedToken) {
+            console.log(chalk.yellow(MODULE), 'No saved token found');
+            return false;
         }
         
-        return false;
-    } catch (error) {
+        // Check if token is about to expire and refresh it if possible
+        if (savedExpirationTime && savedRefreshToken) {
+            const currentTime = Date.now();
+            // If token is expired or will expire in the next 5 minutes (300000ms)
+            if (savedExpirationTime < currentTime + 300000) {
+                console.log(chalk.yellow(MODULE), 'Saved token is expired or about to expire. Attempting to refresh...');
+                
+                // Store the refresh token temporarily so refreshAccessToken can use it
+                refreshToken = savedRefreshToken;
+                
+                const refreshed = await refreshAccessToken(appKey, appSecret);
+                if (refreshed) {
+                    console.log(chalk.green(MODULE), 'Token refreshed successfully');
+                    return true; // refreshAccessToken already initializes the client
+                } else {
+                    console.error(chalk.red(MODULE), 'Failed to refresh token, will try to use the existing token anyway');
+                }
+            }
+        }
+        
+        // Initialize client with the saved token (and refresh token if available)
+        const expiresIn = savedExpirationTime ? Math.max(0, Math.floor((savedExpirationTime - Date.now()) / 1000)) : undefined;
+        return await initializeDropbox(savedToken, appKey, appSecret, savedRefreshToken || undefined, expiresIn);
+    } catch (error: any) {
         console.error(chalk.red(MODULE), 'Error restoring Dropbox client:', error);
         return false;
     }
@@ -423,54 +560,18 @@ export async function uploadCharacter(characterPath: string, excludeTags: string
             console.log(chalk.blue(MODULE), `Processing PNG character card: ${filename}`);
             
             let characterData = null;
-            let extractionMethod = '';
+            let extractionMethod = 'custom extractor';
             
             try {
-                // Extract metadata from PNG using CommonJS import
-                const metadata = pngMetadata.readMetadata(characterContent);
-                extractionMethod = 'png-metadata library';
+                // Use our custom extractor directly since it's the only one that works
+                console.log(chalk.blue(MODULE), `Using custom PNG extractor for ${filename}`);
+                characterData = extractCharacterData(characterContent);
                 
-                // Look for the 'chara' field which contains the base64-encoded character data
-                const charaField = metadata.find((field: any) => field.keyword === 'chara');
-                
-                if (charaField && charaField.text) {
-                    try {
-                        // Decode the base64 data
-                        const jsonStr = Buffer.from(charaField.text, 'base64').toString('utf8');
-                        
-                        // Parse the JSON data
-                        characterData = JSON.parse(jsonStr);
-                    } catch (jsonError) {
-                        console.error(chalk.yellow(MODULE), `Error processing JSON for ${filename}:`, jsonError);
-                    }
-                } else {
-                    // Try alternative field names (some cards might use different metadata field names)
-                    const alternativeFields = ['character', 'tavern', 'card', 'data'];
-                    
-                    for (const fieldName of alternativeFields) {
-                        const field = metadata.find((f: any) => f.keyword === fieldName);
-                        if (field && field.text) {
-                            try {
-                                const jsonStr = Buffer.from(field.text, 'base64').toString('utf8');
-                                characterData = JSON.parse(jsonStr);
-                                if (characterData) break;
-                            } catch (err) {
-                                // Continue to next field
-                            }
-                        }
-                    }
+                if (!characterData) {
+                    console.log(chalk.yellow(MODULE), `No character data could be extracted from ${filename}`);
                 }
-            } catch (metadataError) {
-                console.error(chalk.yellow(MODULE), `Error using png-metadata library for ${filename}:`, metadataError);
-                
-                // Fallback to our custom PNG metadata extractor
-                try {
-                    console.log(chalk.blue(MODULE), `Falling back to custom PNG extractor for ${filename}`);
-                    characterData = extractCharacterData(characterContent);
-                    extractionMethod = 'custom extractor';
-                } catch (customError) {
-                    console.error(chalk.red(MODULE), `Custom extractor also failed for ${filename}:`, customError);
-                }
+            } catch (extractionError) {
+                console.error(chalk.red(MODULE), `Error extracting character data from ${filename}:`, extractionError);
             }
             
             // Check if the character has any excluded tags
@@ -693,4 +794,41 @@ export async function performSync(
  */
 export function checkDropboxAuth(): boolean {
     return dropboxClient !== null && accessToken !== null;
+}
+
+/**
+ * Execute a Dropbox API call with automatic token refresh if needed
+ * @param apiCall Function that executes the Dropbox API call
+ * @param appKey App key for refresh token flow
+ * @param appSecret App secret for refresh token flow
+ */
+async function executeWithTokenRefresh<T>(
+    apiCall: () => Promise<T>, 
+    appKey: string, 
+    appSecret: string
+): Promise<T> {
+    try {
+        // Attempt the API call
+        return await apiCall();
+    } catch (error: any) {
+        // Check if this is an expired token error
+        if (error?.status === 401 && error?.error?.['.tag'] === 'expired_access_token' && refreshToken) {
+            console.log(chalk.yellow(MODULE), 'Received expired token error. Attempting to refresh token...');
+            
+            // Try to refresh the token
+            const refreshed = await refreshAccessToken(appKey, appSecret);
+            
+            if (refreshed) {
+                console.log(chalk.green(MODULE), 'Token refreshed successfully. Retrying API call...');
+                // Retry the API call with the new token
+                return await apiCall();
+            } else {
+                console.error(chalk.red(MODULE), 'Failed to refresh token');
+                throw error;
+            }
+        } else {
+            // Not an expired token error or cannot refresh, rethrow
+            throw error;
+        }
+    }
 } 

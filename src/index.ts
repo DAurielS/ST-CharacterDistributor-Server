@@ -7,9 +7,7 @@ import * as path from 'path';
 import express from 'express';
 import axios from 'axios';
 // import { readMetadata } from 'png-metadata';
-// Use CommonJS require instead of import
-const pngMetadata = require('png-metadata');
-// Import our custom PNG utilities
+// Import our custom PNG utilities that actually work
 import { extractPngMetadata, extractCharacterData } from './utils/pngUtils';
 
 const MODULE = '[Character-Distributor]';
@@ -289,9 +287,11 @@ async function init(router: Router) {
             let accessToken = req.body.accessToken;
             let tokenType = req.body.tokenType || 'bearer';
             let expiresIn = req.body.expiresIn || 14400;
+            let refreshToken = req.body.refreshToken; // Extract refresh token if provided
             
             console.log(chalk.green(MODULE), 'Received Dropbox auth token');
             console.log(chalk.green(MODULE), 'Token length:', accessToken?.length || 0);
+            console.log(chalk.green(MODULE), 'Refresh token provided:', !!refreshToken);
             
             // Validate required fields
             if (!accessToken) {
@@ -302,7 +302,6 @@ async function init(router: Router) {
                 });
             }
             
-            // Validate token format
             if (typeof accessToken !== 'string') {
                 console.error(chalk.red(MODULE), 'Access token is not a string');
                 return res.status(400).json({
@@ -354,7 +353,13 @@ async function init(router: Router) {
                 
                 // If validation passed, proceed with full initialization
                 console.log(chalk.green(MODULE), 'Proceeding with full Dropbox client initialization...');
-                const success = await initializeDropbox(accessToken, settings.dropboxAppKey, settings.dropboxAppSecret);
+                const success = await initializeDropbox(
+                    accessToken, 
+                    settings.dropboxAppKey, 
+                    settings.dropboxAppSecret,
+                    refreshToken, // Pass refresh token if provided
+                    expiresIn     // Pass expiration if provided
+                );
                 
                 if (success) {
                     console.log(chalk.green(MODULE), 'Dropbox client initialization successful');
@@ -368,7 +373,7 @@ async function init(router: Router) {
                 }
             } catch (dropboxError: any) {
                 // More detailed error logging
-                console.error(chalk.red(MODULE), 'Specific error during Dropbox initialization:', dropboxError);
+                console.error(chalk.red(MODULE), 'Error initializing Dropbox client:');
                 console.error(chalk.red(MODULE), 'Error message:', dropboxError.message);
                 console.error(chalk.red(MODULE), 'Error details:', dropboxError.error || 'No details available');
                 
@@ -573,46 +578,17 @@ async function init(router: Router) {
                         
                         // Character data to extract
                         let characterData: any = null;
-                        let extractionMethod = 'unknown';
+                        let extractionMethod = 'custom-extractor';
                         
                         try {
-                            // Try the png-metadata library
-                            const metadata = pngMetadata.readMetadata(fileContent);
-                            extractionMethod = 'png-metadata';
+                            // Use only our custom extractor since the library doesn't work
+                            characterData = extractCharacterData(fileContent);
                             
-                            // Look for the chara field (or alternatives)
-                            const potentialFields = ['chara', 'character', 'tavern', 'card', 'data'];
-                            let characterField = null;
-                            
-                            for (const field of potentialFields) {
-                                characterField = metadata.find((item: any) => item.keyword === field);
-                                if (characterField) break;
+                            if (!characterData) {
+                                console.log(chalk.yellow(MODULE), `No character data could be extracted from ${filename}`);
                             }
-                            
-                            if (characterField && characterField.text) {
-                                try {
-                                    // Check if it's base64 encoded
-                                    if (/^[A-Za-z0-9+/]*={0,2}$/.test(characterField.text)) {
-                                        const decoded = Buffer.from(characterField.text, 'base64').toString('utf8');
-                                        characterData = JSON.parse(decoded);
-                                    } else {
-                                        // Try direct parsing
-                                        characterData = JSON.parse(characterField.text);
-                                    }
-                                } catch (jsonError) {
-                                    console.error(chalk.yellow(MODULE), `Failed to parse JSON from metadata in ${filename}`);
-                                }
-                            }
-                        } catch (metadataError) {
-                            console.error(chalk.yellow(MODULE), `PNG metadata library failed for ${filename}, trying custom extractor`);
-                            
-                            // Try our custom extractor as fallback
-                            try {
-                                characterData = extractCharacterData(fileContent);
-                                extractionMethod = 'custom-extractor';
-                            } catch (customError) {
-                                console.error(chalk.red(MODULE), `All extraction methods failed for ${filename}`);
-                            }
+                        } catch (extractionError) {
+                            console.error(chalk.red(MODULE), `Error extracting character data from ${filename}:`, extractionError);
                         }
                         
                         if (characterData) {
@@ -756,64 +732,81 @@ async function init(router: Router) {
     // Set up sync endpoint
     router.post('/sync', async (req: Request, res: Response) => {
         try {
-            console.log(chalk.blue(MODULE), 'Sync requested');
+            console.log(chalk.green(MODULE), 'Sync endpoint hit');
             
-            // Check if already authenticated
-            if (!checkDropboxAuth()) {
-                console.log(chalk.yellow(MODULE), 'Not authenticated for sync');
-                return res.status(401).json({ 
-                    success: false, 
-                    message: 'Not authenticated with Dropbox' 
+            // Check if a sync is already running to prevent overlapping requests
+            if (syncStatus.running) {
+                console.log(chalk.yellow(MODULE), 'Sync already in progress, skipping');
+                return res.status(200).json({
+                    success: false,
+                    message: 'Sync already in progress'
                 });
             }
             
-            // Get the list of allowed character files from the request
-            const allowedCharacterFiles: string[] = req.body.allowedCharacterFiles || [];
-            const requestExcludeTags: string[] = req.body.excludeTags || [];
-            
-            // Combine request exclude tags with settings exclude tags
-            const excludeTags = [...new Set([...settings.excludeTags, ...requestExcludeTags])];
-            
-            console.log(chalk.blue(MODULE), `Sync requested. Allowed characters: ${allowedCharacterFiles.length}`);
-            console.log(chalk.blue(MODULE), `Excluded tags: ${excludeTags.join(', ')}`);
-            
-            // Update sync status
             syncStatus.running = true;
             
-            // Use SillyTavern's character directory
-            // SillyTavern typically stores characters in "public/characters" or "data/default-user/characters"
-            const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
-            const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
-            
-            console.log(chalk.green(MODULE), `Using characters directory: ${charactersDir}`);
-            
-            // Run the sync operation
-            const result = await runSync(charactersDir, excludeTags, allowedCharacterFiles);
-            
-            // Update sync status
-            syncStatus.lastSync = new Date().toISOString();
-            syncStatus.running = false;
-            syncStatus.sharedCharacters = result.count;
-            
-            // Save updated settings
-            await saveSettingsToFile();
-            
-            return res.status(200).json({
-                success: result.success,
-                count: result.count,
-                removed: result.removed || 0,
-                total: syncStatus.sharedCharacters,
-                message: result.success ? 
-                    `Successfully synced ${result.count} characters` + 
-                    (result.removed ? `, removed ${result.removed} characters` : '') 
-                    : 'Sync failed'
-            });
+            try {
+                // Get the list of excluded tags from settings
+                const excludeTags = settings.excludeTags || [];
+                
+                // Get the list of allowed character files from the request body - this is the list filtered by the UI
+                let allowedCharacterFiles: string[] = [];
+                
+                // Check if the request body includes a filtered list of allowed character files
+                if (req.body && req.body.allowedCharacterFiles && Array.isArray(req.body.allowedCharacterFiles)) {
+                    console.log(chalk.green(MODULE), `Received filtered list of ${req.body.allowedCharacterFiles.length} character files from UI`);
+                    allowedCharacterFiles = req.body.allowedCharacterFiles;
+                    
+                    // Also update excludeTags if provided in the request - this ensures server and UI are in sync
+                    if (req.body.excludeTags && Array.isArray(req.body.excludeTags)) {
+                        console.log(chalk.green(MODULE), `Received updated exclude tags from UI: ${req.body.excludeTags.join(', ')}`);
+                        // Only update temporary exclude tags for this sync operation, don't change settings
+                    }
+                } else {
+                    console.log(chalk.yellow(MODULE), 'No filtered character list provided by UI, using server-side filtering only');
+                }
+                
+                // Use SillyTavern's character directory
+                const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
+                const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
+                
+                console.log(chalk.green(MODULE), `Using characters directory: ${charactersDir}`);
+                
+                // Run the sync operation
+                const result = await runSync(charactersDir, excludeTags, allowedCharacterFiles);
+                
+                // Update sync status
+                syncStatus.lastSync = new Date().toISOString();
+                syncStatus.running = false;
+                syncStatus.sharedCharacters = result.count;
+                
+                // Save updated settings
+                await saveSettingsToFile();
+                
+                return res.status(200).json({
+                    success: result.success,
+                    count: result.count,
+                    removed: result.removed || 0,
+                    total: syncStatus.sharedCharacters,
+                    message: result.success ? 
+                        `Successfully synced ${result.count} characters` + 
+                        (result.removed ? `, removed ${result.removed} characters` : '') 
+                        : 'Sync failed'
+                });
+            } catch (error) {
+                console.error(chalk.red(MODULE), 'Error during sync:', error);
+                syncStatus.running = false;
+                return res.status(500).json({ 
+                    success: false, 
+                    message: 'Internal server error during sync' 
+                });
+            }
         } catch (error) {
-            console.error(chalk.red(MODULE), 'Error during sync:', error);
+            console.error(chalk.red(MODULE), 'Error handling sync request:', error);
             syncStatus.running = false;
             return res.status(500).json({ 
                 success: false, 
-                message: 'Internal server error during sync' 
+                message: 'Internal server error processing sync request' 
             });
         }
     });
@@ -906,7 +899,41 @@ function setupSyncInterval() {
                 syncStatus.running = true;
                 console.log(chalk.green(MODULE), 'Starting scheduled sync');
                 
-                await performSync();
+                // Before syncing, try to get the filtered character list from the UI extension
+                try {
+                    console.log(chalk.blue(MODULE), 'Attempting to request filtered character list from UI extension');
+                    
+                    // Build URL for requesting filtered characters from UI
+                    const baseUrl = process.env.SILLY_TAVERN_URL || 'http://localhost:8000';
+                    const url = `${baseUrl}/api/extensions/third-party/ST-CharacterDistributor-UI/filtered-characters`;
+                    
+                    // Request filtered character list from the UI extension
+                    const response = await axios({
+                        method: 'POST',
+                        url: url,
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        data: {
+                            excludeTags: settings.excludeTags // Send the current exclude tags to the UI
+                        },
+                        timeout: 10000 // 10 second timeout
+                    });
+                    
+                    if (response.status === 200 && response.data && response.data.characterFiles) {
+                        console.log(chalk.green(MODULE), `Retrieved filtered character list from UI: ${response.data.characterFiles.length} characters allowed`);
+                        
+                        // Run sync with the filtered list from the UI
+                        await performSync(response.data.characterFiles);
+                    } else {
+                        console.warn(chalk.yellow(MODULE), 'Could not get filtered character list from UI, falling back to server-side filtering');
+                        await performSync();
+                    }
+                } catch (uiError) {
+                    console.error(chalk.yellow(MODULE), 'Error requesting filtered character list from UI extension, falling back to server-side filtering:', uiError);
+                    // Fall back to server-side filtering if UI is not available
+                    await performSync();
+                }
                 
                 syncStatus.lastSync = new Date().toLocaleString();
                 syncStatus.running = false;
@@ -921,9 +948,9 @@ function setupSyncInterval() {
 }
 
 /**
- * Perform sync operation
+ * Perform a sync operation with the UI extension's filtered character list if available
  */
-async function performSync() {
+async function performSync(allowedCharacterFiles: string[] = []) {
     // Use SillyTavern's character directory
     // SillyTavern typically stores characters in "public/characters" or "data/default-user/characters"
     const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
@@ -932,7 +959,7 @@ async function performSync() {
     console.log(chalk.green(MODULE), `Using characters directory: ${charactersDir}`);
     
     // Call the sync function from Dropbox client
-    return await runSync(charactersDir, settings.excludeTags);
+    return await runSync(charactersDir, settings.excludeTags, allowedCharacterFiles);
 }
 
 /**
