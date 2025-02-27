@@ -449,7 +449,19 @@ async function init(router: Router) {
                 // Update settings - use a different approach to ensure all properties are updated
                 for (const key in newSettings) {
                     if (newSettings.hasOwnProperty(key) && settings.hasOwnProperty(key)) {
-                        settings[key] = newSettings[key] as any; // Type assertion needed since we've narrowed that this is a valid key
+                        // Add special handling for string values, especially app credentials
+                        if (typeof newSettings[key] === 'string') {
+                            // Trim whitespace from app credentials to avoid auth issues
+                            if (key === 'dropboxAppKey' || key === 'dropboxAppSecret') {
+                                const trimmedValue = (newSettings[key] as string).trim();
+                                console.log(chalk.green(MODULE), `Trimmed whitespace from ${key}, original length: ${(newSettings[key] as string).length}, new length: ${trimmedValue.length}`);
+                                settings[key] = trimmedValue;
+                            } else {
+                                settings[key] = newSettings[key] as any;
+                            }
+                        } else {
+                            settings[key] = newSettings[key] as any; // Type assertion needed since we've narrowed that this is a valid key
+                        }
                     }
                 }
                 

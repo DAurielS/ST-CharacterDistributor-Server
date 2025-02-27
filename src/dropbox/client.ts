@@ -446,12 +446,16 @@ export async function restoreDropboxClient(appKey: string, appSecret: string): P
             return false;
         }
         
-        // Check if token is about to expire and refresh it if possible
-        if (savedExpirationTime && savedRefreshToken) {
+        // Check if refresh token is available first - this lets us handle token refresh in more scenarios
+        if (savedRefreshToken) {
             const currentTime = Date.now();
-            // If token is expired or will expire in the next 5 minutes (300000ms)
-            if (savedExpirationTime < currentTime + 300000) {
-                console.log(chalk.yellow(MODULE), 'Saved token is expired or about to expire. Attempting to refresh...');
+            
+            // We should refresh in any of these cases:
+            // 1. Token is already expired (savedExpirationTime < currentTime)
+            // 2. Token will expire soon (savedExpirationTime < currentTime + 300000)
+            // 3. We don't know when it expires (savedExpirationTime is null)
+            if (!savedExpirationTime || savedExpirationTime < currentTime + 300000) {
+                console.log(chalk.yellow(MODULE), 'Saved token is expired, about to expire, or expiration time unknown. Attempting to refresh...');
                 
                 // Store the refresh token temporarily so refreshAccessToken can use it
                 refreshToken = savedRefreshToken;
@@ -461,9 +465,11 @@ export async function restoreDropboxClient(appKey: string, appSecret: string): P
                     console.log(chalk.green(MODULE), 'Token refreshed successfully');
                     return true; // refreshAccessToken already initializes the client
                 } else {
-                    console.error(chalk.red(MODULE), 'Failed to refresh token, will try to use the existing token anyway');
+                    console.log(chalk.yellow(MODULE), 'Failed to refresh token, will try to use the existing token anyway');
                 }
             }
+        } else {
+            console.log(chalk.yellow(MODULE), 'No refresh token available, cannot refresh expired access token');
         }
         
         // Initialize client with the saved token (and refresh token if available)
