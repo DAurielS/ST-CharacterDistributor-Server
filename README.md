@@ -28,13 +28,16 @@ The Character Distributor consists of two components:
 
 1. Go to [Dropbox Developer Console](https://www.dropbox.com/developers/apps)
 2. Click "Create app"
-3. Choose "Scoped access" and "Full Dropbox" access
+3. Choose "Scoped access" and "App Folder" access
 4. Name your app (e.g., "ST Character Distributor")
 5. Add the following redirect URI:
    ```
-   http://localhost:8000/scripts/extensions/third-party/ST-CharacterDistributor-UI/public/oauth_callback.html
+   http://127.0.0.1:8000/scripts/extensions/third-party/ST-CharacterDistributor-UI/public/oauth_callback.html
    ```
-6. Note your App Key and App Secret for later use
+6. Click "Permission Type: Scoped Access (App Folder)" to go to the Permission page
+7. Enable everything under "Files and folders"
+8. Click "Submit"
+9. Note your App Key and App Secret for later use
 
 ### Step 2: Install UI Extension
 
@@ -116,7 +119,7 @@ If characters aren't being detected properly:
 1. Ensure SillyTavern is fully loaded
 2. Try clicking "Refresh Auth Status"
 3. Check the browser console for detailed logs
-4. Verify that characters have proper file extensions (.png or .json)
+4. Verify that characters have proper file extensions (.png)
 
 ### Server Plugin Issues
 
