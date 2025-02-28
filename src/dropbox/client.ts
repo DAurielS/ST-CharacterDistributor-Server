@@ -626,6 +626,7 @@ async function shouldUploadFile(localPath: string, filename: string): Promise<bo
         
         // Ensure version is a number using Number() for explicit conversion
         const localVersion = Number(localData.version || 1.0);
+        console.log(chalk.blue(MODULE), `Local version for ${filename}: ${localVersion}`);
 
         // Download and check Dropbox version
         const tempPath = await downloadToCache(filename);
@@ -648,6 +649,7 @@ async function shouldUploadFile(localPath: string, filename: string): Promise<bo
             
             // Ensure version is a number using Number() for explicit conversion
             const dropboxVersion = Number(dropboxData.version || 1.0);
+            console.log(chalk.blue(MODULE), `Dropbox version for ${filename}: ${dropboxVersion}`);
             
             // Compare versions using explicit numeric comparison with Number type
             if (localVersion > dropboxVersion) {

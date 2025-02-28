@@ -97,9 +97,6 @@ export function extractPngMetadata(buffer: Buffer): MetadataChunk[] {
  */
 function extractVersionNumber(data: any): number {
     try {
-        // Simplified logging - just log we're extracting a version
-        console.log(chalk.blue(MODULE), 'Extracting character version number');
-        
         // Look for the version number in all possible locations
         let versionValue = null;
         let versionSource = null;
@@ -140,11 +137,6 @@ function extractVersionNumber(data: any): number {
         else {
             versionValue = "1.0";
             versionSource = 'default';
-        }
-        
-        // Log only when we found a version and where it came from
-        if (versionSource !== 'default') {
-            console.log(chalk.blue(MODULE), `Found version in ${versionSource}: ${versionValue}`);
         }
         
         // Ensure we're working with a string before parsing
