@@ -616,14 +616,24 @@ async function cleanupTempCache(): Promise<void> {
  */
 async function shouldUploadFile(localPath: string, filename: string): Promise<boolean> {
     try {
+        console.log(chalk.blue(MODULE), `Comparing versions for ${filename}`);
+        
         // Get local version
         const localContent = fs.readFileSync(localPath);
+        console.log(chalk.blue(MODULE), `Read local file: ${filename}, size: ${localContent.length} bytes`);
+        
         const localData = extractCharacterData(localContent);
         if (!localData) {
             console.log(chalk.yellow(MODULE), `No character data found in local file ${filename}, will upload`);
             return true;
         }
-        const localVersion = localData.version || 1.0;
+        
+        // Ensure version is a number and log the exact value and type
+        const localVersion = Number(localData.version || 1.0);
+        console.log(chalk.blue(MODULE), `Local version: ${localVersion} (type: ${typeof localVersion})`);
+        
+        // Dump local data structure (truncated for readability)
+        console.log(chalk.blue(MODULE), `Local data structure keys: ${Object.keys(localData).join(', ')}`);
 
         // Download and check Dropbox version
         const tempPath = await downloadToCache(filename);
@@ -634,6 +644,8 @@ async function shouldUploadFile(localPath: string, filename: string): Promise<bo
 
         try {
             const dropboxContent = fs.readFileSync(tempPath);
+            console.log(chalk.blue(MODULE), `Read Dropbox file from cache: ${filename}, size: ${dropboxContent.length} bytes`);
+            
             const dropboxData = extractCharacterData(dropboxContent);
             
             // Clean up temp file
@@ -644,14 +656,23 @@ async function shouldUploadFile(localPath: string, filename: string): Promise<bo
                 return true;
             }
             
-            const dropboxVersion = dropboxData.version || 1.0;
+            // Ensure version is a number and log the exact value and type
+            const dropboxVersion = Number(dropboxData.version || 1.0);
+            console.log(chalk.blue(MODULE), `Dropbox version: ${dropboxVersion} (type: ${typeof dropboxVersion})`);
             
-            // Compare versions
+            // Dump dropbox data structure (truncated for readability)
+            console.log(chalk.blue(MODULE), `Dropbox data structure keys: ${Object.keys(dropboxData).join(', ')}`);
+            
+            // Compare versions using explicit numeric comparison
+            // Convert both to numbers explicitly to ensure proper comparison
             if (localVersion > dropboxVersion) {
                 console.log(chalk.green(MODULE), `Local version (${localVersion}) is newer than Dropbox version (${dropboxVersion}) for ${filename}, will upload`);
                 return true;
+            } else if (localVersion === dropboxVersion) {
+                console.log(chalk.blue(MODULE), `Local version (${localVersion}) is the same as Dropbox version (${dropboxVersion}) for ${filename}, skipping`);
+                return false;
             } else {
-                console.log(chalk.blue(MODULE), `Local version (${localVersion}) is not newer than Dropbox version (${dropboxVersion}) for ${filename}, skipping`);
+                console.log(chalk.blue(MODULE), `Local version (${localVersion}) is older than Dropbox version (${dropboxVersion}) for ${filename}, skipping`);
                 return false;
             }
         } catch (error) {

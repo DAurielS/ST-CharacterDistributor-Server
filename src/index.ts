@@ -267,6 +267,155 @@ async function init(router: Router) {
         }
     });
     
+    // Add character version inspection endpoint
+    router.get('/inspect/:characterFilename', async (req: Request, res: Response) => {
+        try {
+            const filename = req.params.characterFilename;
+            console.log(chalk.blue(MODULE), `Inspecting character file: ${filename}`);
+            
+            // Use SillyTavern's character directory
+            const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
+            const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
+            const filePath = path.join(charactersDir, filename);
+            
+            // Check if file exists
+            if (!fs.existsSync(filePath)) {
+                console.error(chalk.red(MODULE), `Character file not found: ${filePath}`);
+                return res.status(404).json({ success: false, error: 'Character file not found' });
+            }
+            
+            // Read file content
+            const fileContent = fs.readFileSync(filePath);
+            console.log(chalk.blue(MODULE), `Read file: ${filePath}, size: ${fileContent.length} bytes`);
+            
+            // Extract character data
+            let characterData = null;
+            let extractionMethod = '';
+            
+            try {
+                // Use our custom PNG extractor
+                console.log(chalk.blue(MODULE), 'Attempting to extract character data using custom extractor...');
+                characterData = extractCharacterData(fileContent);
+                extractionMethod = 'custom-extractor';
+                
+                if (!characterData) {
+                    console.log(chalk.yellow(MODULE), `No character data could be extracted from ${filename}`);
+                }
+            } catch (extractErr) {
+                const extractionError = extractErr as Error;
+                console.error(chalk.red(MODULE), `Error extracting character data from ${filename}:`, extractionError);
+                return res.status(500).json({ 
+                    success: false, 
+                    error: `Error extracting character data: ${extractionError.message}` 
+                });
+            }
+            
+            // If no data was extracted, try parsing as JSON if it's a JSON file
+            if (!characterData && filename.endsWith('.json')) {
+                try {
+                    console.log(chalk.blue(MODULE), 'Attempting to parse as JSON...');
+                    characterData = JSON.parse(fileContent.toString('utf8'));
+                    extractionMethod = 'json-parse';
+                } catch (jsonError) {
+                    console.error(chalk.red(MODULE), `Error parsing JSON from ${filename}:`, jsonError);
+                }
+            }
+            
+            // If no data was extracted or parsed, return error
+            if (!characterData) {
+                return res.status(400).json({ 
+                    success: false, 
+                    error: 'Could not extract character data from file' 
+                });
+            }
+            
+            // Check for version information
+            let versionInfo: {
+                detected: boolean;
+                value: string | number | null;
+                location: string | null;
+                numeric: number | null;
+            } = {
+                detected: false,
+                value: null,
+                location: null,
+                numeric: null
+            };
+            
+            // Look for version in common locations
+            if (characterData.character_version !== undefined) {
+                versionInfo = {
+                    detected: true,
+                    value: characterData.character_version,
+                    location: 'character_version',
+                    numeric: Number(characterData.character_version)
+                };
+            } else if (characterData.version !== undefined) {
+                versionInfo = {
+                    detected: true,
+                    value: characterData.version,
+                    location: 'version',
+                    numeric: Number(characterData.version)
+                };
+            } else if (characterData.metadata?.character_version !== undefined) {
+                versionInfo = {
+                    detected: true,
+                    value: characterData.metadata.character_version,
+                    location: 'metadata.character_version',
+                    numeric: Number(characterData.metadata.character_version)
+                };
+            } else if (characterData.metadata?.version !== undefined) {
+                versionInfo = {
+                    detected: true,
+                    value: characterData.metadata.version,
+                    location: 'metadata.version',
+                    numeric: Number(characterData.metadata.version)
+                };
+            } else if (characterData.creator?.character_version !== undefined) {
+                versionInfo = {
+                    detected: true,
+                    value: characterData.creator.character_version,
+                    location: 'creator.character_version',
+                    numeric: Number(characterData.creator.character_version)
+                };
+            } else if (characterData.creator?.version !== undefined) {
+                versionInfo = {
+                    detected: true,
+                    value: characterData.creator.version,
+                    location: 'creator.version',
+                    numeric: Number(characterData.creator.version)
+                };
+            }
+            
+            // Return the inspection results
+            return res.status(200).json({
+                success: true,
+                filename: filename,
+                fileSize: fileContent.length,
+                fileType: filename.endsWith('.png') ? 'PNG' : 'JSON',
+                extractionMethod: extractionMethod,
+                characterName: characterData.name || characterData.char_name || path.basename(filename, path.extname(filename)),
+                versionInfo: versionInfo,
+                dataStructure: {
+                    keys: Object.keys(characterData),
+                    hasMetadata: !!characterData.metadata,
+                    hasCreator: !!characterData.creator,
+                    hasTags: !!characterData.tags
+                },
+                // Include version field in top-level response too for easy reference
+                version: versionInfo.value,
+                numericVersion: versionInfo.numeric
+            });
+        } catch (err) {
+            const error = err as Error;
+            console.error(chalk.red(MODULE), 'Error inspecting character file:', error);
+            return res.status(500).json({ 
+                success: false, 
+                error: `Internal server error: ${error.message}` 
+            });
+        }
+    });
+    
     // Set up auth endpoint
     router.post('/auth', async (req: Request, res: Response) => {
         try {

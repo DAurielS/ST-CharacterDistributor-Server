@@ -97,20 +97,63 @@ export function extractPngMetadata(buffer: Buffer): MetadataChunk[] {
  */
 function extractVersionNumber(data: any): number {
     try {
-        // Check for version in various locations
-        const version = data.character_version || 
-                       data.version || 
-                       data.metadata?.character_version ||
-                       data.metadata?.version ||
-                       data.creator?.character_version ||
-                       data.creator?.version ||
-                       "1.0";
+        // Print the full data structure for debugging
+        console.log(chalk.blue(MODULE), 'Extracting version from character data:', 
+            JSON.stringify(data, (key, value) => 
+                // Limit long string values to reduce log size
+                typeof value === 'string' && value.length > 100 ? value.substring(0, 100) + '...' : value
+            , 2)
+        );
+
+        // Look for the version number in all possible locations
+        let versionValue = null;
         
-        // Convert to float, handling both string and number inputs
-        const versionFloat = parseFloat(version.toString());
+        // Try direct properties first
+        if (data.character_version !== undefined) {
+            versionValue = data.character_version;
+            console.log(chalk.blue(MODULE), 'Found version in data.character_version:', versionValue);
+        } else if (data.version !== undefined) {
+            versionValue = data.version;
+            console.log(chalk.blue(MODULE), 'Found version in data.version:', versionValue);
+        }
+        // Then try nested properties in metadata
+        else if (data.metadata?.character_version !== undefined) {
+            versionValue = data.metadata.character_version;
+            console.log(chalk.blue(MODULE), 'Found version in data.metadata.character_version:', versionValue);
+        } else if (data.metadata?.version !== undefined) {
+            versionValue = data.metadata.version;
+            console.log(chalk.blue(MODULE), 'Found version in data.metadata.version:', versionValue);
+        }
+        // Then try nested properties in creator
+        else if (data.creator?.character_version !== undefined) {
+            versionValue = data.creator.character_version;
+            console.log(chalk.blue(MODULE), 'Found version in data.creator.character_version:', versionValue);
+        } else if (data.creator?.version !== undefined) {
+            versionValue = data.creator.version;
+            console.log(chalk.blue(MODULE), 'Found version in data.creator.version:', versionValue);
+        }
+        // Default if nothing found
+        else {
+            versionValue = "1.0";
+            console.log(chalk.yellow(MODULE), 'No version found, defaulting to:', versionValue);
+        }
+        
+        // Ensure we're working with a string before parsing
+        const versionString = String(versionValue);
+        
+        // Convert to float
+        const versionFloat = parseFloat(versionString);
+        
+        // Log the parsing result
+        console.log(chalk.blue(MODULE), `Parsed version: ${versionString} → ${versionFloat}`);
         
         // Return 1.0 if conversion fails or version is invalid
-        return isNaN(versionFloat) ? 1.0 : versionFloat;
+        if (isNaN(versionFloat)) {
+            console.log(chalk.yellow(MODULE), 'Version parsing failed, defaulting to 1.0');
+            return 1.0;
+        }
+        
+        return versionFloat;
     } catch (error) {
         console.log(chalk.yellow(MODULE), 'Error extracting version number, defaulting to 1.0:', error);
         return 1.0;
@@ -141,11 +184,13 @@ export function extractCharacterData(buffer: Buffer): CharacterData | null {
                     // For base64-encoded fields, decode first
                     if (isBase64(field.text)) {
                         const jsonStr = Buffer.from(field.text, 'base64').toString('utf8');
+                        console.log(chalk.blue(MODULE), `Extracted base64 data from ${fieldName} field`);
                         const data = JSON.parse(jsonStr);
                         data.version = extractVersionNumber(data);
                         return data;
                     } else {
                         // For directly JSON-encoded fields
+                        console.log(chalk.blue(MODULE), `Extracted JSON data from ${fieldName} field`);
                         const data = JSON.parse(field.text);
                         data.version = extractVersionNumber(data);
                         return data;
@@ -164,10 +209,12 @@ export function extractCharacterData(buffer: Buffer): CharacterData | null {
             if (chunk.text.length > 100 && isBase64(chunk.text)) {
                 try {
                     const jsonStr = Buffer.from(chunk.text, 'base64').toString('utf8');
+                    console.log(chalk.blue(MODULE), `Attempting to extract data from longer chunk with keyword: ${chunk.keyword}`);
                     const data = JSON.parse(jsonStr);
                     
                     // Check if it looks like character data (has common fields)
                     if (data.name || data.char_name || data.description || data.personality) {
+                        console.log(chalk.green(MODULE), `Found character data in longer chunk with keyword: ${chunk.keyword}`);
                         data.version = extractVersionNumber(data);
                         return data;
                     }
