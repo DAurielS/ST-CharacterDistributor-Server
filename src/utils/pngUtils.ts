@@ -143,7 +143,9 @@ function extractVersionNumber(data: any): number {
         }
         
         // Log only when we found a version and where it came from
-        console.log(chalk.blue(MODULE), `Found version in ${versionSource}: ${versionValue}`);
+        if (versionSource !== 'default') {
+            console.log(chalk.blue(MODULE), `Found version in ${versionSource}: ${versionValue}`);
+        }
         
         // Ensure we're working with a string before parsing
         const versionString = String(versionValue);
@@ -188,13 +190,11 @@ export function extractCharacterData(buffer: Buffer): CharacterData | null {
                     // For base64-encoded fields, decode first
                     if (isBase64(field.text)) {
                         const jsonStr = Buffer.from(field.text, 'base64').toString('utf8');
-                        console.log(chalk.blue(MODULE), `Extracted base64 data from ${fieldName} field`);
                         const data = JSON.parse(jsonStr);
                         data.version = extractVersionNumber(data);
                         return data;
                     } else {
                         // For directly JSON-encoded fields
-                        console.log(chalk.blue(MODULE), `Extracted JSON data from ${fieldName} field`);
                         const data = JSON.parse(field.text);
                         data.version = extractVersionNumber(data);
                         return data;
@@ -213,12 +213,10 @@ export function extractCharacterData(buffer: Buffer): CharacterData | null {
             if (chunk.text.length > 100 && isBase64(chunk.text)) {
                 try {
                     const jsonStr = Buffer.from(chunk.text, 'base64').toString('utf8');
-                    console.log(chalk.blue(MODULE), `Attempting to extract data from longer chunk with keyword: ${chunk.keyword}`);
                     const data = JSON.parse(jsonStr);
                     
                     // Check if it looks like character data (has common fields)
                     if (data.name || data.char_name || data.description || data.personality) {
-                        console.log(chalk.green(MODULE), `Found character data in longer chunk with keyword: ${chunk.keyword}`);
                         data.version = extractVersionNumber(data);
                         return data;
                     }
