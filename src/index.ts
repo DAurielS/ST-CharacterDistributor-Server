@@ -15,6 +15,7 @@ const MODULE = '[Character-Distributor]';
 // Define settings file path
 const dataDir = process.env.DATA_DIR || './data';
 const settingsFilePath = path.join(dataDir, 'character-distributor-settings.json');
+const statusFilePath = path.join(dataDir, 'character-distributor-status.json');
 
 // Define the settings interface with index signature
 interface SettingsType {
@@ -213,8 +214,9 @@ async function init(router: Router) {
     router.use(express.json());
     console.log(chalk.green(MODULE), 'Added JSON body parser middleware');
     
-    // Load settings from file
+    // Load settings and status from files
     await loadSettingsFromFile();
+    await loadSyncStatus();
     
     // Try to restore Dropbox client from saved token
     if (settings.dropboxAppKey && settings.dropboxAppSecret) {
@@ -758,8 +760,11 @@ async function init(router: Router) {
                 });
             }
             
-            syncStatus.running = true;
-            updateStatus({ lastCheck: new Date().toISOString() });
+            // Update and save status before starting sync
+            updateStatus({ 
+                running: true,
+                lastCheck: new Date().toISOString()
+            });
             
             try {
                 // Get the list of allowed character files from the request body
@@ -775,8 +780,9 @@ async function init(router: Router) {
                 // Perform the sync operation using the performSync function
                 const result = await performSync(allowedCharacterFiles);
                 
-                // Update sync status
+                // Update status after successful sync
                 updateStatus({
+                    running: false,
                     lastSync: new Date().toISOString(),
                     sharedCharacters: result.count || 0
                 });
@@ -793,17 +799,17 @@ async function init(router: Router) {
                 });
             } catch (error) {
                 console.error(chalk.red(MODULE), 'Error during sync:', error);
-                syncStatus.running = false;
+                // Update status on error
+                updateStatus({ running: false });
                 return res.status(500).json({ 
                     success: false, 
                     message: 'Internal server error during sync' 
                 });
-            } finally {
-                syncStatus.running = false;
             }
         } catch (error) {
             console.error(chalk.red(MODULE), 'Error handling sync request:', error);
-            syncStatus.running = false;
+            // Update status on error
+            updateStatus({ running: false });
             return res.status(500).json({ 
                 success: false, 
                 message: 'Internal server error processing sync request' 
@@ -937,7 +943,49 @@ async function generateShareLink(characterId: string) {
     return await createShareLink(characterId);
 }
 
-// Function to update sync status
+// Function to save sync status to file
+async function saveSyncStatus() {
+    try {
+        // Ensure directory exists
+        const dir = path.dirname(statusFilePath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+
+        // Save status to file
+        const statusToSave = JSON.stringify(syncStatus, null, 2);
+        fs.writeFileSync(statusFilePath, statusToSave, 'utf8');
+        console.log(chalk.green(MODULE), 'Sync status saved to file');
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error saving sync status:', error);
+    }
+}
+
+// Function to load sync status from file
+async function loadSyncStatus() {
+    try {
+        if (fs.existsSync(statusFilePath)) {
+            const data = fs.readFileSync(statusFilePath, 'utf8');
+            const loadedStatus = JSON.parse(data) as SyncStatus;
+            
+            // Update status with loaded values, maintaining type safety
+            syncStatus = {
+                running: false, // Always start with running false
+                lastSync: loadedStatus.lastSync || '',
+                lastCheck: loadedStatus.lastCheck || '',
+                sharedCharacters: loadedStatus.sharedCharacters || 0
+            };
+            
+            console.log(chalk.green(MODULE), 'Loaded sync status from file');
+        } else {
+            console.log(chalk.yellow(MODULE), 'No saved sync status found, using defaults');
+        }
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error loading sync status:', error);
+    }
+}
+
+// Update the updateStatus function to save status after updates
 function updateStatus(updates: Partial<SyncStatus>) {
     // Ensure string fields are never null
     const sanitizedUpdates = { ...updates };
@@ -948,8 +996,12 @@ function updateStatus(updates: Partial<SyncStatus>) {
         sanitizedUpdates.lastCheck = '';
     }
     
+    // Update status
     syncStatus = { ...syncStatus, ...sanitizedUpdates };
     console.log(chalk.blue(MODULE), 'Updated sync status:', syncStatus);
+    
+    // Save to file
+    saveSyncStatus();
 }
 
 export default {
