@@ -335,56 +335,102 @@ async function init(router: Router) {
                 value: string | number | null;
                 location: string | null;
                 numeric: number | null;
+                rawValue: any; // Add raw value field
             } = {
                 detected: false,
                 value: null,
                 location: null,
-                numeric: null
+                numeric: null,
+                rawValue: null 
             };
             
+            // Log available paths for debugging
+            console.log(chalk.blue(MODULE), 'Inspecting character data structure:');
+            console.log(chalk.blue(MODULE), 'Root keys:', Object.keys(characterData).join(', '));
+            if (characterData.data && typeof characterData.data === 'object') {
+                console.log(chalk.blue(MODULE), 'data.data keys:', Object.keys(characterData.data).join(', '));
+            }
+            if (characterData.metadata && typeof characterData.metadata === 'object') {
+                console.log(chalk.blue(MODULE), 'metadata keys:', Object.keys(characterData.metadata).join(', '));
+            }
+            if (characterData.creator && typeof characterData.creator === 'object') {
+                console.log(chalk.blue(MODULE), 'creator keys:', Object.keys(characterData.creator).join(', '));
+            }
+            
             // Look for version in common locations
-            if (characterData.character_version !== undefined) {
+            // This order matches the extraction priority in pngUtils.ts
+            
+            // Check in data.data
+            if (characterData.data?.character_version !== undefined) {
+                versionInfo = {
+                    detected: true,
+                    value: characterData.data.character_version,
+                    location: 'data.character_version',
+                    numeric: Number(characterData.data.character_version),
+                    rawValue: characterData.data.character_version
+                };
+            }
+            // Check direct properties
+            else if (characterData.character_version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.character_version,
                     location: 'character_version',
-                    numeric: Number(characterData.character_version)
+                    numeric: Number(characterData.character_version),
+                    rawValue: characterData.character_version
                 };
             } else if (characterData.version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.version,
                     location: 'version',
-                    numeric: Number(characterData.version)
+                    numeric: Number(characterData.version),
+                    rawValue: characterData.version
                 };
-            } else if (characterData.metadata?.character_version !== undefined) {
+            } 
+            // Then check in metadata
+            else if (characterData.metadata?.character_version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.metadata.character_version,
                     location: 'metadata.character_version',
-                    numeric: Number(characterData.metadata.character_version)
+                    numeric: Number(characterData.metadata.character_version),
+                    rawValue: characterData.metadata.character_version
                 };
             } else if (characterData.metadata?.version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.metadata.version,
                     location: 'metadata.version',
-                    numeric: Number(characterData.metadata.version)
+                    numeric: Number(characterData.metadata.version),
+                    rawValue: characterData.metadata.version
                 };
-            } else if (characterData.creator?.character_version !== undefined) {
+            }
+            // Finally check in creator
+            else if (characterData.creator?.character_version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.creator.character_version,
                     location: 'creator.character_version',
-                    numeric: Number(characterData.creator.character_version)
+                    numeric: Number(characterData.creator.character_version),
+                    rawValue: characterData.creator.character_version
                 };
             } else if (characterData.creator?.version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.creator.version,
                     location: 'creator.version',
-                    numeric: Number(characterData.creator.version)
+                    numeric: Number(characterData.creator.version),
+                    rawValue: characterData.creator.version
                 };
+            }
+            
+            // Log the found version information
+            if (versionInfo.detected) {
+                console.log(chalk.green(MODULE), `Found version in ${versionInfo.location}:`, 
+                    versionInfo.value, `(numeric: ${versionInfo.numeric}, type: ${typeof versionInfo.rawValue})`);
+            } else {
+                console.log(chalk.yellow(MODULE), 'No version information found in character data');
             }
             
             // Return the inspection results
@@ -399,12 +445,15 @@ async function init(router: Router) {
                 dataStructure: {
                     keys: Object.keys(characterData),
                     hasMetadata: !!characterData.metadata,
+                    hasData: !!characterData.data,
                     hasCreator: !!characterData.creator,
-                    hasTags: !!characterData.tags
+                    hasTags: !!characterData.tags,
+                    dataKeys: characterData.data ? Object.keys(characterData.data) : null
                 },
                 // Include version field in top-level response too for easy reference
                 version: versionInfo.value,
-                numericVersion: versionInfo.numeric
+                numericVersion: versionInfo.numeric,
+                originalType: typeof versionInfo.rawValue
             });
         } catch (err) {
             const error = err as Error;

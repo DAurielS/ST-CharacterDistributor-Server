@@ -105,38 +105,57 @@ function extractVersionNumber(data: any): number {
             , 2)
         );
 
+        // Log all keys at the root level and nested in data if it exists
+        console.log(chalk.blue(MODULE), 'Root level keys:', Object.keys(data).join(', '));
+        if (data.data && typeof data.data === 'object') {
+            console.log(chalk.blue(MODULE), 'data.data keys:', Object.keys(data.data).join(', '));
+        }
+
         // Look for the version number in all possible locations
         let versionValue = null;
+        let versionSource = null;
         
-        // Try direct properties first
-        if (data.character_version !== undefined) {
+        // Check all possible locations where version might be stored
+        // This is ordered by priority - earlier checks take precedence
+        
+        // Try nested data.data properties (common in v3 cards)
+        if (data.data?.character_version !== undefined) {
+            versionValue = data.data.character_version;
+            versionSource = 'data.data.character_version';
+        } 
+        // Try direct properties
+        else if (data.character_version !== undefined) {
             versionValue = data.character_version;
-            console.log(chalk.blue(MODULE), 'Found version in data.character_version:', versionValue);
+            versionSource = 'data.character_version';
         } else if (data.version !== undefined) {
             versionValue = data.version;
-            console.log(chalk.blue(MODULE), 'Found version in data.version:', versionValue);
+            versionSource = 'data.version';
         }
         // Then try nested properties in metadata
         else if (data.metadata?.character_version !== undefined) {
             versionValue = data.metadata.character_version;
-            console.log(chalk.blue(MODULE), 'Found version in data.metadata.character_version:', versionValue);
+            versionSource = 'data.metadata.character_version';
         } else if (data.metadata?.version !== undefined) {
             versionValue = data.metadata.version;
-            console.log(chalk.blue(MODULE), 'Found version in data.metadata.version:', versionValue);
+            versionSource = 'data.metadata.version';
         }
         // Then try nested properties in creator
         else if (data.creator?.character_version !== undefined) {
             versionValue = data.creator.character_version;
-            console.log(chalk.blue(MODULE), 'Found version in data.creator.character_version:', versionValue);
+            versionSource = 'data.creator.character_version';
         } else if (data.creator?.version !== undefined) {
             versionValue = data.creator.version;
-            console.log(chalk.blue(MODULE), 'Found version in data.creator.version:', versionValue);
+            versionSource = 'data.creator.version';
         }
         // Default if nothing found
         else {
             versionValue = "1.0";
-            console.log(chalk.yellow(MODULE), 'No version found, defaulting to:', versionValue);
+            versionSource = 'default';
         }
+        
+        // Log the details of what we found
+        console.log(chalk.blue(MODULE), `Found version in ${versionSource}:`, versionValue, 
+            `(type: ${typeof versionValue})`);
         
         // Ensure we're working with a string before parsing
         const versionString = String(versionValue);
@@ -145,7 +164,7 @@ function extractVersionNumber(data: any): number {
         const versionFloat = parseFloat(versionString);
         
         // Log the parsing result
-        console.log(chalk.blue(MODULE), `Parsed version: ${versionString} → ${versionFloat}`);
+        console.log(chalk.blue(MODULE), `Parsed version: ${versionString} → ${versionFloat} (type: ${typeof versionFloat})`);
         
         // Return 1.0 if conversion fails or version is invalid
         if (isNaN(versionFloat)) {
