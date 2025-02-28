@@ -97,20 +97,9 @@ export function extractPngMetadata(buffer: Buffer): MetadataChunk[] {
  */
 function extractVersionNumber(data: any): number {
     try {
-        // Print the full data structure for debugging
-        console.log(chalk.blue(MODULE), 'Extracting version from character data:', 
-            JSON.stringify(data, (key, value) => 
-                // Limit long string values to reduce log size
-                typeof value === 'string' && value.length > 100 ? value.substring(0, 100) + '...' : value
-            , 2)
-        );
-
-        // Log all keys at the root level and nested in data if it exists
-        console.log(chalk.blue(MODULE), 'Root level keys:', Object.keys(data).join(', '));
-        if (data.data && typeof data.data === 'object') {
-            console.log(chalk.blue(MODULE), 'data.data keys:', Object.keys(data.data).join(', '));
-        }
-
+        // Simplified logging - just log we're extracting a version
+        console.log(chalk.blue(MODULE), 'Extracting character version number');
+        
         // Look for the version number in all possible locations
         let versionValue = null;
         let versionSource = null;
@@ -153,18 +142,14 @@ function extractVersionNumber(data: any): number {
             versionSource = 'default';
         }
         
-        // Log the details of what we found
-        console.log(chalk.blue(MODULE), `Found version in ${versionSource}:`, versionValue, 
-            `(type: ${typeof versionValue})`);
+        // Log only when we found a version and where it came from
+        console.log(chalk.blue(MODULE), `Found version in ${versionSource}: ${versionValue}`);
         
         // Ensure we're working with a string before parsing
         const versionString = String(versionValue);
         
         // Convert to float
         const versionFloat = parseFloat(versionString);
-        
-        // Log the parsing result
-        console.log(chalk.blue(MODULE), `Parsed version: ${versionString} → ${versionFloat} (type: ${typeof versionFloat})`);
         
         // Return 1.0 if conversion fails or version is invalid
         if (isNaN(versionFloat)) {
@@ -174,7 +159,7 @@ function extractVersionNumber(data: any): number {
         
         return versionFloat;
     } catch (error) {
-        console.log(chalk.yellow(MODULE), 'Error extracting version number, defaulting to 1.0:', error);
+        console.log(chalk.yellow(MODULE), 'Error extracting version number, defaulting to 1.0');
         return 1.0;
     }
 }

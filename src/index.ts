@@ -269,108 +269,87 @@ async function init(router: Router) {
     
     // Add character version inspection endpoint
     router.get('/inspect/:characterFilename', async (req: Request, res: Response) => {
+        console.log(chalk.blue(MODULE), `Inspecting character file ${req.params.characterFilename}`);
+        
         try {
-            const filename = req.params.characterFilename;
-            console.log(chalk.blue(MODULE), `Inspecting character file: ${filename}`);
-            
             // Use SillyTavern's character directory
             const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
-            const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
-            const filePath = path.join(charactersDir, filename);
+            const charsPath = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
             
             // Check if file exists
+            const filePath = path.join(charsPath, req.params.characterFilename);
             if (!fs.existsSync(filePath)) {
-                console.error(chalk.red(MODULE), `Character file not found: ${filePath}`);
-                return res.status(404).json({ success: false, error: 'Character file not found' });
+                console.log(chalk.red(MODULE), `File not found: ${filePath}`);
+                return res.status(404).json({ error: 'Character file not found' });
             }
             
-            // Read file content
+            // Read the file
             const fileContent = fs.readFileSync(filePath);
-            console.log(chalk.blue(MODULE), `Read file: ${filePath}, size: ${fileContent.length} bytes`);
+            console.log(chalk.blue(MODULE), `Read character file: ${req.params.characterFilename}`);
             
-            // Extract character data
-            let characterData = null;
+            // Attempt to extract data
+            let characterData: any = null;
             let extractionMethod = '';
+            let extractionError: Error | null = null;
             
             try {
-                // Use our custom PNG extractor
-                console.log(chalk.blue(MODULE), 'Attempting to extract character data using custom extractor...');
+                // Try using character data extractor
                 characterData = extractCharacterData(fileContent);
-                extractionMethod = 'custom-extractor';
-                
-                if (!characterData) {
-                    console.log(chalk.yellow(MODULE), `No character data could be extracted from ${filename}`);
+                if (characterData) {
+                    extractionMethod = 'png';
                 }
             } catch (extractErr) {
-                const extractionError = extractErr as Error;
-                console.error(chalk.red(MODULE), `Error extracting character data from ${filename}:`, extractionError);
-                return res.status(500).json({ 
-                    success: false, 
-                    error: `Error extracting character data: ${extractionError.message}` 
-                });
+                const err = extractErr as Error;
+                extractionError = err;
+                console.log(chalk.yellow(MODULE), `PNG extraction failed: ${err.message}`);
             }
             
-            // If no data was extracted, try parsing as JSON if it's a JSON file
-            if (!characterData && filename.endsWith('.json')) {
+            // If PNG extraction failed, try JSON parsing
+            if (!characterData) {
                 try {
-                    console.log(chalk.blue(MODULE), 'Attempting to parse as JSON...');
                     characterData = JSON.parse(fileContent.toString('utf8'));
-                    extractionMethod = 'json-parse';
-                } catch (jsonError) {
-                    console.error(chalk.red(MODULE), `Error parsing JSON from ${filename}:`, jsonError);
+                    extractionMethod = 'json';
+                } catch (err) {
+                    console.log(chalk.yellow(MODULE), `JSON parsing failed: ${(err as Error).message}`);
+                    
+                    if (extractionError) {
+                        return res.status(400).json({ 
+                            error: `Could not extract character data: ${extractionError.message}` 
+                        });
+                    } else {
+                        return res.status(400).json({ 
+                            error: `Could not parse JSON: ${(err as Error).message}` 
+                        });
+                    }
                 }
             }
             
-            // If no data was extracted or parsed, return error
             if (!characterData) {
-                return res.status(400).json({ 
-                    success: false, 
-                    error: 'Could not extract character data from file' 
-                });
+                return res.status(400).json({ error: 'Could not extract character data' });
             }
             
-            // Check for version information
-            let versionInfo: {
-                detected: boolean;
-                value: string | number | null;
-                location: string | null;
-                numeric: number | null;
-                rawValue: any; // Add raw value field
-            } = {
+            // Check where version information is found
+            let versionInfo = {
                 detected: false,
                 value: null,
-                location: null,
-                numeric: null,
-                rawValue: null 
+                location: '',
+                numeric: 0,
+                rawValue: null
             };
             
-            // Log available paths for debugging
-            console.log(chalk.blue(MODULE), 'Inspecting character data structure:');
-            console.log(chalk.blue(MODULE), 'Root keys:', Object.keys(characterData).join(', '));
-            if (characterData.data && typeof characterData.data === 'object') {
-                console.log(chalk.blue(MODULE), 'data.data keys:', Object.keys(characterData.data).join(', '));
-            }
-            if (characterData.metadata && typeof characterData.metadata === 'object') {
-                console.log(chalk.blue(MODULE), 'metadata keys:', Object.keys(characterData.metadata).join(', '));
-            }
-            if (characterData.creator && typeof characterData.creator === 'object') {
-                console.log(chalk.blue(MODULE), 'creator keys:', Object.keys(characterData.creator).join(', '));
-            }
-            
-            // Look for version in common locations
-            // This order matches the extraction priority in pngUtils.ts
-            
-            // Check in data.data
-            if (characterData.data?.character_version !== undefined) {
+            // Check in data.data.character_version (priority)
+            if (characterData.data && 
+                characterData.data.data && 
+                characterData.data.data.character_version !== undefined) {
                 versionInfo = {
                     detected: true,
-                    value: characterData.data.character_version,
-                    location: 'data.character_version',
-                    numeric: Number(characterData.data.character_version),
-                    rawValue: characterData.data.character_version
+                    value: characterData.data.data.character_version,
+                    location: 'data.data.character_version',
+                    numeric: Number(characterData.data.data.character_version),
+                    rawValue: characterData.data.data.character_version
                 };
             }
-            // Check direct properties
+            // Check character_version
             else if (characterData.character_version !== undefined) {
                 versionInfo = {
                     detected: true,
@@ -379,7 +358,19 @@ async function init(router: Router) {
                     numeric: Number(characterData.character_version),
                     rawValue: characterData.character_version
                 };
-            } else if (characterData.version !== undefined) {
+            }
+            // Check data.character_version
+            else if (characterData.data && characterData.data.character_version !== undefined) {
+                versionInfo = {
+                    detected: true,
+                    value: characterData.data.character_version,
+                    location: 'data.character_version',
+                    numeric: Number(characterData.data.character_version),
+                    rawValue: characterData.data.character_version
+                };
+            }
+            // Check version
+            else if (characterData.version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.version,
@@ -387,9 +378,19 @@ async function init(router: Router) {
                     numeric: Number(characterData.version),
                     rawValue: characterData.version
                 };
-            } 
-            // Then check in metadata
-            else if (characterData.metadata?.character_version !== undefined) {
+            }
+            // Check data.version
+            else if (characterData.data && characterData.data.version !== undefined) {
+                versionInfo = {
+                    detected: true,
+                    value: characterData.data.version,
+                    location: 'data.version',
+                    numeric: Number(characterData.data.version),
+                    rawValue: characterData.data.version
+                };
+            }
+            // Check metadata.character_version
+            else if (characterData.metadata && characterData.metadata.character_version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.metadata.character_version,
@@ -397,7 +398,9 @@ async function init(router: Router) {
                     numeric: Number(characterData.metadata.character_version),
                     rawValue: characterData.metadata.character_version
                 };
-            } else if (characterData.metadata?.version !== undefined) {
+            }
+            // Check metadata.version
+            else if (characterData.metadata && characterData.metadata.version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.metadata.version,
@@ -406,8 +409,8 @@ async function init(router: Router) {
                     rawValue: characterData.metadata.version
                 };
             }
-            // Finally check in creator
-            else if (characterData.creator?.character_version !== undefined) {
+            // Check creator.character_version
+            else if (characterData.creator && characterData.creator.character_version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.creator.character_version,
@@ -415,7 +418,9 @@ async function init(router: Router) {
                     numeric: Number(characterData.creator.character_version),
                     rawValue: characterData.creator.character_version
                 };
-            } else if (characterData.creator?.version !== undefined) {
+            }
+            // Check creator.version
+            else if (characterData.creator && characterData.creator.version !== undefined) {
                 versionInfo = {
                     detected: true,
                     value: characterData.creator.version,
@@ -425,43 +430,35 @@ async function init(router: Router) {
                 };
             }
             
-            // Log the found version information
             if (versionInfo.detected) {
-                console.log(chalk.green(MODULE), `Found version in ${versionInfo.location}:`, 
-                    versionInfo.value, `(numeric: ${versionInfo.numeric}, type: ${typeof versionInfo.rawValue})`);
+                console.log(chalk.green(MODULE), `Found version in ${versionInfo.location}: ${versionInfo.value}`);
             } else {
-                console.log(chalk.yellow(MODULE), 'No version information found in character data');
+                console.log(chalk.yellow(MODULE), `No version information detected`);
             }
             
-            // Return the inspection results
-            return res.status(200).json({
-                success: true,
-                filename: filename,
-                fileSize: fileContent.length,
-                fileType: filename.endsWith('.png') ? 'PNG' : 'JSON',
-                extractionMethod: extractionMethod,
-                characterName: characterData.name || characterData.char_name || path.basename(filename, path.extname(filename)),
-                versionInfo: versionInfo,
-                dataStructure: {
-                    keys: Object.keys(characterData),
-                    hasMetadata: !!characterData.metadata,
-                    hasData: !!characterData.data,
-                    hasCreator: !!characterData.creator,
-                    hasTags: !!characterData.tags,
-                    dataKeys: characterData.data ? Object.keys(characterData.data) : null
-                },
-                // Include version field in top-level response too for easy reference
-                version: versionInfo.value,
-                numericVersion: versionInfo.numeric,
-                originalType: typeof versionInfo.rawValue
+            // Extract basic character information
+            const name = characterData.name || (characterData.data && characterData.data.name) || 'Unknown';
+            
+            // Check data structure
+            const dataStructure = {
+                hasKeys: Object.keys(characterData).join(', '),
+                hasMetadata: characterData.metadata !== undefined,
+                hasData: characterData.data !== undefined,
+                hasCreator: characterData.creator !== undefined,
+                hasTags: characterData.tags !== undefined
+            };
+            
+            return res.json({
+                filename: req.params.characterFilename,
+                extractionMethod,
+                name,
+                versionInfo,
+                dataStructure
             });
+            
         } catch (err) {
-            const error = err as Error;
-            console.error(chalk.red(MODULE), 'Error inspecting character file:', error);
-            return res.status(500).json({ 
-                success: false, 
-                error: `Internal server error: ${error.message}` 
-            });
+            console.error(chalk.red(MODULE), `Error inspecting character file:`, err);
+            return res.status(500).json({ error: `Server error: ${(err as Error).message}` });
         }
     });
     

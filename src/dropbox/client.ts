@@ -620,7 +620,6 @@ async function shouldUploadFile(localPath: string, filename: string): Promise<bo
         
         // Get local version
         const localContent = fs.readFileSync(localPath);
-        console.log(chalk.blue(MODULE), `Read local file: ${filename}, size: ${localContent.length} bytes`);
         
         const localData = extractCharacterData(localContent);
         if (!localData) {
@@ -628,19 +627,9 @@ async function shouldUploadFile(localPath: string, filename: string): Promise<bo
             return true;
         }
         
-        // Log the raw version value before conversion
-        console.log(chalk.blue(MODULE), `Raw local version value:`, localData.version, 
-            `(type: ${typeof localData.version})`);
-        
         // Ensure version is a number using Number() for explicit conversion
         const localVersion = Number(localData.version || 1.0);
-        console.log(chalk.blue(MODULE), `Local version (converted): ${localVersion} (type: ${typeof localVersion})`);
-        
-        // Dump local data structure (truncated for readability)
-        console.log(chalk.blue(MODULE), `Local data structure keys: ${Object.keys(localData).join(', ')}`);
-        if (localData.data && typeof localData.data === 'object') {
-            console.log(chalk.blue(MODULE), `Local data.data keys: ${Object.keys(localData.data).join(', ')}`);
-        }
+        console.log(chalk.blue(MODULE), `Local version: ${localVersion}`);
 
         // Download and check Dropbox version
         const tempPath = await downloadToCache(filename);
@@ -651,7 +640,6 @@ async function shouldUploadFile(localPath: string, filename: string): Promise<bo
 
         try {
             const dropboxContent = fs.readFileSync(tempPath);
-            console.log(chalk.blue(MODULE), `Read Dropbox file from cache: ${filename}, size: ${dropboxContent.length} bytes`);
             
             const dropboxData = extractCharacterData(dropboxContent);
             
@@ -663,44 +651,31 @@ async function shouldUploadFile(localPath: string, filename: string): Promise<bo
                 return true;
             }
             
-            // Log the raw version value before conversion
-            console.log(chalk.blue(MODULE), `Raw Dropbox version value:`, dropboxData.version, 
-                `(type: ${typeof dropboxData.version})`);
-            
             // Ensure version is a number using Number() for explicit conversion
             const dropboxVersion = Number(dropboxData.version || 1.0);
-            console.log(chalk.blue(MODULE), `Dropbox version (converted): ${dropboxVersion} (type: ${typeof dropboxVersion})`);
-            
-            // Dump dropbox data structure (truncated for readability)
-            console.log(chalk.blue(MODULE), `Dropbox data structure keys: ${Object.keys(dropboxData).join(', ')}`);
-            if (dropboxData.data && typeof dropboxData.data === 'object') {
-                console.log(chalk.blue(MODULE), `Dropbox data.data keys: ${Object.keys(dropboxData.data).join(', ')}`);
-            }
+            console.log(chalk.blue(MODULE), `Dropbox version: ${dropboxVersion}`);
             
             // Compare versions using explicit numeric comparison with Number type
-            console.log(chalk.blue(MODULE), `Comparing: ${localVersion} vs ${dropboxVersion}`);
-            
-            // Handle all three comparison cases separately for better logging
             if (localVersion > dropboxVersion) {
-                console.log(chalk.green(MODULE), `Local version (${localVersion}) is NEWER than Dropbox version (${dropboxVersion}) for ${filename}`);
-                console.log(chalk.green(MODULE), `Result: Will upload newer version`);
+                console.log(chalk.green(MODULE), `Local version (${localVersion}) is newer than Dropbox version (${dropboxVersion}) for ${filename}`);
+                console.log(chalk.green(MODULE), `Will upload newer version`);
                 return true;
             } else if (localVersion === dropboxVersion) {
-                console.log(chalk.blue(MODULE), `Local version (${localVersion}) is EQUAL to Dropbox version (${dropboxVersion}) for ${filename}`);
-                console.log(chalk.blue(MODULE), `Result: Skipping upload of identical version`);
+                console.log(chalk.blue(MODULE), `Local version (${localVersion}) is equal to Dropbox version (${dropboxVersion}) for ${filename}`);
+                console.log(chalk.blue(MODULE), `Skipping upload of identical version`);
                 return false;
             } else {
-                console.log(chalk.blue(MODULE), `Local version (${localVersion}) is OLDER than Dropbox version (${dropboxVersion}) for ${filename}`);
-                console.log(chalk.blue(MODULE), `Result: Skipping upload of older version`);
+                console.log(chalk.blue(MODULE), `Local version (${localVersion}) is older than Dropbox version (${dropboxVersion}) for ${filename}`);
+                console.log(chalk.blue(MODULE), `Skipping upload of older version`);
                 return false;
             }
         } catch (error) {
-            console.error(chalk.red(MODULE), `Error comparing versions for ${filename}:`, error);
+            console.error(chalk.red(MODULE), `Error comparing versions for ${filename}`);
             // If we can't compare versions, upload to be safe
             return true;
         }
     } catch (error) {
-        console.error(chalk.red(MODULE), `Error checking versions for ${filename}:`, error);
+        console.error(chalk.red(MODULE), `Error checking versions for ${filename}`);
         // If we can't check versions, upload to be safe
         return true;
     }
