@@ -34,16 +34,19 @@ let settings: SettingsType = {
     excludeTags: ['Private']
 };
 
-// Define the sync status interface to include removal count
-interface SyncStatusType {
-    lastSync: string;
+// Define the sync status interface
+interface SyncStatus {
     running: boolean;
+    lastSync: string;
+    lastCheck: string;
     sharedCharacters: number;
 }
 
-let syncStatus: SyncStatusType = {
-    lastSync: '',
+// Status tracking
+let syncStatus: SyncStatus = {
     running: false,
+    lastSync: '',  // Empty string instead of null
+    lastCheck: '',  // Empty string instead of null
     sharedCharacters: 0
 };
 
@@ -744,9 +747,9 @@ async function init(router: Router) {
     // Set up sync endpoint
     router.post('/sync', async (req: Request, res: Response) => {
         try {
-            console.log(chalk.green(MODULE), 'Sync endpoint hit');
+            console.log(chalk.green(MODULE), 'Manual sync requested');
             
-            // Check if a sync is already running to prevent overlapping requests
+            // Check if a sync is already running
             if (syncStatus.running) {
                 console.log(chalk.yellow(MODULE), 'Sync already in progress, skipping');
                 return res.status(200).json({
@@ -756,44 +759,27 @@ async function init(router: Router) {
             }
             
             syncStatus.running = true;
+            updateStatus({ lastCheck: new Date().toISOString() });
             
             try {
-                // Get the list of excluded tags from settings
-                const excludeTags = settings.excludeTags || [];
-                
-                // Get the list of allowed character files from the request body - this is the list filtered by the UI
+                // Get the list of allowed character files from the request body
                 let allowedCharacterFiles: string[] = [];
                 
-                // Check if the request body includes a filtered list of allowed character files
                 if (req.body && req.body.allowedCharacterFiles && Array.isArray(req.body.allowedCharacterFiles)) {
                     console.log(chalk.green(MODULE), `Received filtered list of ${req.body.allowedCharacterFiles.length} character files from UI`);
                     allowedCharacterFiles = req.body.allowedCharacterFiles;
-                    
-                    // Also update excludeTags if provided in the request - this ensures server and UI are in sync
-                    if (req.body.excludeTags && Array.isArray(req.body.excludeTags)) {
-                        console.log(chalk.green(MODULE), `Received updated exclude tags from UI: ${req.body.excludeTags.join(', ')}`);
-                        // Only update temporary exclude tags for this sync operation, don't change settings
-                    }
                 } else {
-                    console.log(chalk.yellow(MODULE), 'No filtered character list provided by UI, using server-side filtering only');
+                    console.log(chalk.yellow(MODULE), 'No filtered character list provided, using server-side filtering only');
                 }
                 
-                // Use SillyTavern's character directory
-                const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
-                const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
-                
-                console.log(chalk.green(MODULE), `Using characters directory: ${charactersDir}`);
-                
-                // Run the sync operation
-                const result = await runSync(charactersDir, excludeTags, allowedCharacterFiles);
+                // Perform the sync operation using the performSync function
+                const result = await performSync(allowedCharacterFiles);
                 
                 // Update sync status
-                syncStatus.lastSync = new Date().toISOString();
-                syncStatus.running = false;
-                syncStatus.sharedCharacters = result.count;
-                
-                // Save updated settings
-                await saveSettingsToFile();
+                updateStatus({
+                    lastSync: new Date().toISOString(),
+                    sharedCharacters: result.count || 0
+                });
                 
                 return res.status(200).json({
                     success: result.success,
@@ -812,6 +798,8 @@ async function init(router: Router) {
                     success: false, 
                     message: 'Internal server error during sync' 
                 });
+            } finally {
+                syncStatus.running = false;
             }
         } catch (error) {
             console.error(chalk.red(MODULE), 'Error handling sync request:', error);
@@ -901,62 +889,30 @@ async function init(router: Router) {
  * Sets up the sync interval
  */
 function setupSyncInterval() {
+    // Clear any existing interval
     if (syncIntervalId) {
         clearInterval(syncIntervalId);
+        syncIntervalId = null;
     }
-    
-    syncIntervalId = setInterval(async () => {
-        if (!syncStatus.running) {
-            try {
-                syncStatus.running = true;
-                console.log(chalk.green(MODULE), 'Starting scheduled sync');
-                
-                // Before syncing, try to get the filtered character list from the UI extension
-                try {
-                    console.log(chalk.blue(MODULE), 'Attempting to request filtered character list from UI extension');
-                    
-                    // Build URL for requesting filtered characters from UI
-                    const baseUrl = process.env.SILLY_TAVERN_URL || 'http://localhost:8000';
-                    const url = `${baseUrl}/api/extensions/third-party/ST-CharacterDistributor-UI/filtered-characters`;
-                    
-                    // Request filtered character list from the UI extension
-                    const response = await axios({
-                        method: 'POST',
-                        url: url,
-                        headers: {
-                            'Content-Type': 'application/json'
-                        },
-                        data: {
-                            excludeTags: settings.excludeTags // Send the current exclude tags to the UI
-                        },
-                        timeout: 10000 // 10 second timeout
-                    });
-                    
-                    if (response.status === 200 && response.data && response.data.characterFiles) {
-                        console.log(chalk.green(MODULE), `Retrieved filtered character list from UI: ${response.data.characterFiles.length} characters allowed`);
-                        
-                        // Run sync with the filtered list from the UI
-                        await performSync(response.data.characterFiles);
-                    } else {
-                        console.warn(chalk.yellow(MODULE), 'Could not get filtered character list from UI, falling back to server-side filtering');
-                        await performSync();
-                    }
-                } catch (uiError) {
-                    console.error(chalk.yellow(MODULE), 'Error requesting filtered character list from UI extension, falling back to server-side filtering:', uiError);
-                    // Fall back to server-side filtering if UI is not available
-                    await performSync();
-                }
-                
-                syncStatus.lastSync = new Date().toLocaleString();
-                syncStatus.running = false;
-            } catch (error) {
-                console.error(chalk.red(MODULE), 'Error during scheduled sync:', error);
-                syncStatus.running = false;
-            }
+
+    // Get sync interval from settings (default to 30 minutes)
+    const syncInterval = settings.syncInterval || 1800;
+    console.log(chalk.green(MODULE), `Setting up sync interval: ${syncInterval} seconds`);
+
+    // Set up the new interval
+    syncIntervalId = setInterval(() => {
+        // Only trigger sync if auto-sync is enabled
+        if (settings.autoSync) {
+            console.log(chalk.green(MODULE), 'Auto-sync interval triggered');
+            // Note: Actual sync will happen when UI sends filtered characters
+            // This just logs that the interval was triggered
+            updateStatus({ lastCheck: new Date().toISOString() });
         } else {
-            console.log(chalk.yellow(MODULE), 'Skipping scheduled sync because a sync is already in progress');
+            console.log(chalk.yellow(MODULE), 'Auto-sync is disabled, skipping interval sync');
         }
-    }, settings.syncInterval * 1000);
+    }, syncInterval * 1000);
+
+    console.log(chalk.green(MODULE), 'Sync interval setup complete');
 }
 
 /**
@@ -979,6 +935,21 @@ async function performSync(allowedCharacterFiles: string[] = []) {
  */
 async function generateShareLink(characterId: string) {
     return await createShareLink(characterId);
+}
+
+// Function to update sync status
+function updateStatus(updates: Partial<SyncStatus>) {
+    // Ensure string fields are never null
+    const sanitizedUpdates = { ...updates };
+    if ('lastSync' in sanitizedUpdates && sanitizedUpdates.lastSync === null) {
+        sanitizedUpdates.lastSync = '';
+    }
+    if ('lastCheck' in sanitizedUpdates && sanitizedUpdates.lastCheck === null) {
+        sanitizedUpdates.lastCheck = '';
+    }
+    
+    syncStatus = { ...syncStatus, ...sanitizedUpdates };
+    console.log(chalk.blue(MODULE), 'Updated sync status:', syncStatus);
 }
 
 export default {
