@@ -9,7 +9,7 @@ import fetch from 'node-fetch';
 // Use CommonJS require instead of import
 const pngMetadata = require('png-metadata');
 // Import our custom PNG utilities
-import { extractPngMetadata, extractCharacterData } from '../utils/pngUtils';
+import { extractPngMetadata, extractCharacterData, CharacterData } from '../utils/pngUtils';
 
 // Shared module variables
 const MODULE = '[Character-Distributor-Dropbox]';
@@ -17,6 +17,7 @@ const MODULE = '[Character-Distributor-Dropbox]';
 // Define token file path
 const dataDir = process.env.DATA_DIR || './data';
 const tokenFilePath = path.join(dataDir, 'character-distributor-token.json');
+const tempCacheDir = path.join(dataDir, 'temp-cache');
 
 // Dropbox client instance
 let dropboxClient: Dropbox | null = null;
@@ -547,6 +548,138 @@ async function ensureCharactersFolder(): Promise<void> {
 }
 
 /**
+ * Ensures the temporary cache directory exists
+ */
+async function ensureTempCache(): Promise<void> {
+    try {
+        if (!fs.existsSync(tempCacheDir)) {
+            fs.mkdirSync(tempCacheDir, { recursive: true });
+        }
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error creating temp cache directory:', error);
+        throw error;
+    }
+}
+
+/**
+ * Downloads a file from Dropbox to the temporary cache
+ * @param filename The name of the file to download
+ * @returns The path to the cached file
+ */
+async function downloadToCache(filename: string): Promise<string | null> {
+    if (!dropboxClient) {
+        console.error(chalk.red(MODULE), 'Dropbox client not initialized');
+        return null;
+    }
+
+    try {
+        await ensureTempCache();
+        const tempPath = path.join(tempCacheDir, `${nanoid()}-${filename}`);
+        
+        // Download the file
+        const response = await dropboxClient.filesDownload({
+            path: `/characters/${filename}`
+        }) as any;
+
+        // Write to temp file
+        fs.writeFileSync(tempPath, response.result.fileBinary);
+        
+        return tempPath;
+    } catch (error) {
+        console.error(chalk.red(MODULE), `Error downloading ${filename} to cache:`, error);
+        return null;
+    }
+}
+
+/**
+ * Cleans up the temporary cache directory
+ */
+async function cleanupTempCache(): Promise<void> {
+    try {
+        if (fs.existsSync(tempCacheDir)) {
+            const files = fs.readdirSync(tempCacheDir);
+            for (const file of files) {
+                fs.unlinkSync(path.join(tempCacheDir, file));
+            }
+        }
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error cleaning up temp cache:', error);
+        // Don't throw, just log the error
+    }
+}
+
+/**
+ * Checks if a local file should be uploaded based on version comparison
+ * @param localPath Path to the local file
+ * @param dropboxPath Path in Dropbox to compare against
+ * @returns true if the local file should be uploaded
+ */
+async function shouldUploadFile(localPath: string, filename: string): Promise<boolean> {
+    try {
+        // Get local version
+        const localContent = fs.readFileSync(localPath);
+        const localData = extractCharacterData(localContent);
+        if (!localData) {
+            console.log(chalk.yellow(MODULE), `No character data found in local file ${filename}, will upload`);
+            return true;
+        }
+        const localVersion = localData.version || 1.0;
+
+        // Download and check Dropbox version
+        const tempPath = await downloadToCache(filename);
+        if (!tempPath) {
+            console.log(chalk.yellow(MODULE), `Could not download ${filename} from Dropbox, will upload`);
+            return true;
+        }
+
+        try {
+            const dropboxContent = fs.readFileSync(tempPath);
+            const dropboxData = extractCharacterData(dropboxContent);
+            
+            // Clean up temp file
+            fs.unlinkSync(tempPath);
+            
+            if (!dropboxData) {
+                console.log(chalk.yellow(MODULE), `No character data found in Dropbox file ${filename}, will upload`);
+                return true;
+            }
+            
+            const dropboxVersion = dropboxData.version || 1.0;
+            
+            // Compare versions
+            if (localVersion > dropboxVersion) {
+                console.log(chalk.green(MODULE), `Local version (${localVersion}) is newer than Dropbox version (${dropboxVersion}) for ${filename}, will upload`);
+                return true;
+            } else {
+                console.log(chalk.blue(MODULE), `Local version (${localVersion}) is not newer than Dropbox version (${dropboxVersion}) for ${filename}, skipping`);
+                return false;
+            }
+        } catch (error) {
+            console.error(chalk.red(MODULE), `Error comparing versions for ${filename}:`, error);
+            // If we can't compare versions, upload to be safe
+            return true;
+        }
+    } catch (error) {
+        console.error(chalk.red(MODULE), `Error checking versions for ${filename}:`, error);
+        // If we can't check versions, upload to be safe
+        return true;
+    }
+}
+
+/**
+ * Helper function to convert tags of any type to a string array
+ * This fixes the TypeScript error with tag handling
+ */
+function convertTagsToArray(tags: unknown): string[] {
+    if (Array.isArray(tags)) {
+        return tags.map(tag => String(tag).trim());
+    } else if (typeof tags === 'string') {
+        return tags.split(',').map(tag => tag.trim());
+    }
+    return [];
+}
+
+/**
  * Upload a character to Dropbox
  */
 export async function uploadCharacter(characterPath: string, excludeTags: string[]): Promise<boolean> {
@@ -566,11 +699,8 @@ export async function uploadCharacter(characterPath: string, excludeTags: string
             console.log(chalk.blue(MODULE), `Processing PNG character card: ${filename}`);
             
             let characterData = null;
-            let extractionMethod = 'custom extractor';
             
             try {
-                // Use our custom extractor directly since it's the only one that works
-                console.log(chalk.blue(MODULE), `Using custom PNG extractor for ${filename}`);
                 characterData = extractCharacterData(characterContent);
                 
                 if (!characterData) {
@@ -582,36 +712,40 @@ export async function uploadCharacter(characterPath: string, excludeTags: string
             
             // Check if the character has any excluded tags
             if (characterData && characterData.tags) {
-                const tags = Array.isArray(characterData.tags) 
-                    ? characterData.tags 
-                    : characterData.tags.split(',').map((tag: string) => tag.trim());
+                const tags = convertTagsToArray(characterData.tags);
                     
                 if (tags.some((tag: string) => excludeTags.includes(tag))) {
-                    console.log(chalk.yellow(MODULE), `Skipping character with excluded tag (using ${extractionMethod}):`, filename);
+                    console.log(chalk.yellow(MODULE), `Skipping character with excluded tag:`, filename);
                     return false;
                 }
             }
             
-            if (!characterData) {
-                console.log(chalk.yellow(MODULE), `No character data found in ${filename} metadata, uploading anyway`);
-            } else {
-                console.log(chalk.green(MODULE), `Successfully processed character metadata (using ${extractionMethod}) for: ${filename}`);
+            // Check if we should upload based on version comparison
+            const shouldUpload = await shouldUploadFile(characterPath, filename);
+            if (!shouldUpload) {
+                return false;
             }
         } else if (filename.endsWith('.json')) {
-            // For plain JSON files, directly parse the content
+            // For JSON files, parse directly
             try {
-                const characterData = JSON.parse(characterContent.toString('utf8'));
+                // Parse JSON data
+                const jsonData = JSON.parse(characterContent.toString('utf8'));
                 
-                // Check if the character has any excluded tags
-                if (characterData.tags) {
-                    const tags = Array.isArray(characterData.tags) 
-                        ? characterData.tags 
-                        : characterData.tags.split(',').map((tag: string) => tag.trim());
-                        
-                    if (tags.some((tag: string) => excludeTags.includes(tag))) {
+                // Handle tags safely with our helper function
+                if (jsonData && typeof jsonData === 'object' && 'tags' in jsonData) {
+                    const tagArray = convertTagsToArray(jsonData.tags);
+                    
+                    // Check for excluded tags
+                    if (tagArray.some(tag => excludeTags.includes(tag))) {
                         console.log(chalk.yellow(MODULE), 'Skipping character with excluded tag:', filename);
                         return false;
                     }
+                }
+                
+                // Check if we should upload based on version comparison
+                const shouldUpload = await shouldUploadFile(characterPath, filename);
+                if (!shouldUpload) {
+                    return false;
                 }
             } catch (jsonError) {
                 console.error(chalk.yellow(MODULE), `Error parsing JSON in ${filename}:`, jsonError);
@@ -674,12 +808,12 @@ export async function generateShareLink(characterId: string): Promise<string | n
 }
 
 /**
- * Perform sync of characters to Dropbox
+ * Perform a sync operation
  */
 export async function performSync(
     charactersDir: string,
     excludeTags: string[] = [],
-    allowedCharacterFiles: string[] = [] // List of files that are allowed to be uploaded
+    allowedCharacterFiles: string[] = []
 ): Promise<{success: boolean, count: number, removed: number}> {
     if (!dropboxClient) {
         console.error(chalk.red(MODULE), 'Dropbox client not initialized');
@@ -687,29 +821,29 @@ export async function performSync(
     }
     
     try {
-        // Create characters folder if it doesn't exist
-        try {
-            await ensureCharactersFolder();
-        } catch (error) {
-            console.error(chalk.red(MODULE), 'Error ensuring characters folder exists:', error);
-            throw error;
-        }
+        // Ensure characters folder exists
+        await ensureCharactersFolder();
         
-        // First, list what's currently in Dropbox
-        console.log(chalk.blue(MODULE), 'Listing existing files in Dropbox /characters folder');
-        const dropboxContents = await dropboxClient.filesListFolder({
+        // Clean up any existing temp files
+        await cleanupTempCache();
+        
+        let uploadCount = 0;
+        let removedCount = 0;
+        
+        // Step 1: Get list of currently uploaded files and remove those that shouldn't be there
+        console.log(chalk.blue(MODULE), 'Getting list of currently uploaded files');
+        
+        const result = await dropboxClient.filesListFolder({
             path: '/characters'
         });
         
-        // Get filenames of all currently uploaded files
-        const currentlyUploadedFiles = dropboxContents.result.entries
+        const currentlyUploadedFiles = result.result.entries
             .filter(entry => entry['.tag'] === 'file')
             .map(entry => path.basename(entry.path_display || ''));
+            
+        console.log(chalk.blue(MODULE), `Found ${currentlyUploadedFiles.length} files in Dropbox`);
         
-        console.log(chalk.blue(MODULE), `Found ${currentlyUploadedFiles.length} character files already on Dropbox`);
-        
-        // Step 1: Remove files that shouldn't be there anymore
-        let removedCount = 0;
+        // Remove files that no longer meet criteria
         for (const existingFile of currentlyUploadedFiles) {
             // Skip non-character files
             if (!existingFile.endsWith('.png') && !existingFile.endsWith('.json')) {
@@ -756,39 +890,26 @@ export async function performSync(
             console.log(chalk.blue(MODULE), `Filtered to ${characterFiles.length} allowed character files`);
         }
         
-        console.log(chalk.blue(MODULE), `Found ${characterFiles.length} character files to process`);
-        
-        // Upload each character
-        let uploadedCount = 0;
-        for (const file of characterFiles) {
-            const fullPath = path.join(charactersDir, file);
+        // Process each character file
+        for (const filename of characterFiles) {
+            const filePath = path.join(charactersDir, filename);
             
             // Skip directories
-            if (fs.statSync(fullPath).isDirectory()) {
+            if (fs.statSync(filePath).isDirectory()) {
                 continue;
             }
             
-            // Check if the file already exists in Dropbox to avoid unnecessary uploads
-            const fileExists = currentlyUploadedFiles.includes(file);
-            
-            if (fileExists) {
-                console.log(chalk.blue(MODULE), `File already exists in Dropbox, skipping upload: ${file}`);
-                uploadedCount++;
-                continue;
-            }
-            
-            const success = await uploadCharacter(fullPath, excludeTags);
-            if (success) {
-                uploadedCount++;
+            // Try to upload the character
+            if (await uploadCharacter(filePath, excludeTags)) {
+                uploadCount++;
             }
         }
         
-        console.log(chalk.green(MODULE), `Sync completed: ${uploadedCount} characters uploaded, ${removedCount} removed`);
+        // Clean up temp cache after sync
+        await cleanupTempCache();
         
-        // Update shared characters count (for stats)
-        sharedCharactersCount = currentlyUploadedFiles.length - removedCount + uploadedCount;
-        
-        return { success: true, count: uploadedCount, removed: removedCount };
+        console.log(chalk.green(MODULE), `Sync complete. Uploaded ${uploadCount} files, removed ${removedCount} files`);
+        return { success: true, count: uploadCount, removed: removedCount };
     } catch (error) {
         console.error(chalk.red(MODULE), 'Error during sync:', error);
         return { success: false, count: 0, removed: 0 };

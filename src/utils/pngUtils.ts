@@ -12,6 +12,16 @@ export interface MetadataChunk {
     text: string;
 }
 
+export interface CharacterData {
+    name?: string;
+    char_name?: string;
+    description?: string;
+    personality?: string;
+    tags?: string[];
+    version?: number;
+    [key: string]: any;
+}
+
 /**
  * Extracts text chunks from a PNG file buffer.
  * This is a custom implementation that doesn't rely on external libraries.
@@ -81,13 +91,40 @@ export function extractPngMetadata(buffer: Buffer): MetadataChunk[] {
 }
 
 /**
+ * Extracts the version number from character metadata
+ * @param data The character data object
+ * @returns The version number as a float, defaults to 1.0 if not found
+ */
+function extractVersionNumber(data: any): number {
+    try {
+        // Check for version in various locations
+        const version = data.character_version || 
+                       data.version || 
+                       data.metadata?.character_version ||
+                       data.metadata?.version ||
+                       data.creator?.character_version ||
+                       data.creator?.version ||
+                       "1.0";
+        
+        // Convert to float, handling both string and number inputs
+        const versionFloat = parseFloat(version.toString());
+        
+        // Return 1.0 if conversion fails or version is invalid
+        return isNaN(versionFloat) ? 1.0 : versionFloat;
+    } catch (error) {
+        console.log(chalk.yellow(MODULE), 'Error extracting version number, defaulting to 1.0:', error);
+        return 1.0;
+    }
+}
+
+/**
  * Attempts to extract character data from a PNG file.
  * This function checks multiple known metadata fields where character data might be stored.
  * 
  * @param buffer The PNG file as a buffer
  * @returns The parsed character data object or null if not found
  */
-export function extractCharacterData(buffer: Buffer): any | null {
+export function extractCharacterData(buffer: Buffer): CharacterData | null {
     try {
         // Try using the custom PNG metadata extractor
         const metadata = extractPngMetadata(buffer);
@@ -104,10 +141,14 @@ export function extractCharacterData(buffer: Buffer): any | null {
                     // For base64-encoded fields, decode first
                     if (isBase64(field.text)) {
                         const jsonStr = Buffer.from(field.text, 'base64').toString('utf8');
-                        return JSON.parse(jsonStr);
+                        const data = JSON.parse(jsonStr);
+                        data.version = extractVersionNumber(data);
+                        return data;
                     } else {
                         // For directly JSON-encoded fields
-                        return JSON.parse(field.text);
+                        const data = JSON.parse(field.text);
+                        data.version = extractVersionNumber(data);
+                        return data;
                     }
                 } catch (jsonError) {
                     console.error(chalk.yellow(MODULE), `Error parsing JSON from ${fieldName} field:`, jsonError);
@@ -127,6 +168,7 @@ export function extractCharacterData(buffer: Buffer): any | null {
                     
                     // Check if it looks like character data (has common fields)
                     if (data.name || data.char_name || data.description || data.personality) {
+                        data.version = extractVersionNumber(data);
                         return data;
                     }
                 } catch (error) {
