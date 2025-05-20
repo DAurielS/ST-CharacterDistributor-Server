@@ -127,12 +127,43 @@ export interface IAuthService {
 }
 
 /**
- * Placeholder for Character Service Interface.
- * To be fleshed out in later tasks.
+ * Defines the detailed structure of a character.
+ */
+export interface CharacterDetail {
+  fileName: string; // e.g., "MyChar.png"
+  filePath: string; // Full path to the local file
+  name: string | null; // Character's display name
+  version: string | null; // Character's version string
+  tags: string[];
+  charData?: any; // The actual character data object, optional here
+}
+
+/**
+ * Interface for the Character Service.
+ * Manages discovery, processing, and details of character files.
  */
 export interface ICharacterService {
-  // Example method:
-  // getCharacterById(id: string): Promise<any>;
+  /**
+   * Initializes the character service.
+   * @param settingsService - Service to access application settings (e.g., exclude tags, character paths).
+   */
+  init(settingsService: ISettingsService): void;
+
+  /**
+   * Retrieves details for all local character files, applying exclusion tags.
+   * @returns A promise that resolves to an array of CharacterDetail objects.
+   */
+  getLocalCharacters(): Promise<CharacterDetail[]>;
+
+  /**
+   * Retrieves details for a single character file.
+   * @param filePath - The full path to the character file.
+   * @returns A promise that resolves to a CharacterDetail object, or null if not found or processing fails.
+   */
+  getCharacterDetails(filePath: string): Promise<CharacterDetail | null>;
+
+  // Potential private helper, not part of the public interface:
+  // extractCharacterVersion(data: any): string | null;
 }
 
 /**
