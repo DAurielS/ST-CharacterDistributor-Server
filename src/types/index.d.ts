@@ -1,4 +1,5 @@
 // ST-CharacterDistributor-Server/src/types/index.d.ts
+import { files } from 'dropbox'; // Added for IDropboxClientService
 
 /**
  * Defines the structure for plugin settings.
@@ -223,10 +224,64 @@ export interface IStatusService {
 }
 
 /**
- * Placeholder for Dropbox Client Service Interface.
- * To be fleshed out in later tasks.
+ * Type alias for Dropbox file metadata, covering files, folders, and deleted entries.
+ */
+export type DropboxFileMetadata = files.FileMetadataReference | files.FolderMetadataReference | files.DeletedMetadataReference;
+
+/**
+ * Interface for the Dropbox Client Service.
+ * Provides a lean client for direct Dropbox API interactions,
+ * delegating authentication to IAuthService.
  */
 export interface IDropboxClientService {
-  // Example method:
-  // listFiles(path: string): Promise<any[]>;
+  /**
+   * Initializes the Dropbox SDK instance using the configured AuthService and SettingsService.
+   * This must be called before any other methods can be used.
+   */
+  init(): Promise<void>;
+
+  /**
+   * Lists files and folders in a given Dropbox folder path.
+   * @param folderPath - The path to the folder in Dropbox (e.g., "/Apps/MyApp/MyFolder").
+   * @returns A promise that resolves to an array of Dropbox file/folder entries.
+   */
+  listFiles(folderPath: string): Promise<files.ListFolderResult['entries']>;
+
+  /**
+   * Downloads a file from Dropbox.
+   * @param dropboxPath - The full path to the file in Dropbox (e.g., "/Apps/MyApp/MyFile.txt").
+   * @returns A promise that resolves to a Buffer containing the file content.
+   */
+  downloadFile(dropboxPath: string): Promise<Buffer>;
+
+  /**
+   * Uploads a file to Dropbox.
+   * @param localPathOrBuffer - The local file system path (string) to the file to upload, or a Buffer containing the file content.
+   * @param dropboxPath - The full path where the file should be saved in Dropbox (e.g., "/Apps/MyApp/MyNewFile.txt").
+   * @param mode - Optional. The write mode for the upload (e.g., add, overwrite, update). Defaults to 'add'.
+   * @returns A promise that resolves to the metadata of the uploaded file.
+   */
+  uploadFile(localPathOrBuffer: string | Buffer, dropboxPath: string, mode?: files.WriteMode): Promise<files.FileMetadata>;
+
+  /**
+   * Deletes a file or folder from Dropbox.
+   * @param dropboxPath - The full path to the file or folder to delete in Dropbox.
+   * @returns A promise that resolves to the result of the delete operation.
+   */
+  deleteFile(dropboxPath: string): Promise<files.DeleteResult>;
+
+  /**
+   * Ensures a folder exists at the specified path in Dropbox.
+   * If the folder does not exist, it will be created.
+   * @param folderPath - The path to the folder in Dropbox.
+   * @returns A promise that resolves to the metadata of the folder.
+   */
+  createFolder(folderPath: string): Promise<files.FolderMetadata>;
+
+  /**
+   * Retrieves metadata for a file or folder in Dropbox.
+   * @param path - The path to the file or folder in Dropbox.
+   * @returns A promise that resolves to the metadata object, or null if the path does not exist.
+   */
+  getMetadata(path: string): Promise<DropboxFileMetadata | null>;
 }
