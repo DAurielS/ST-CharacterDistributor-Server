@@ -97,12 +97,82 @@ export interface ISyncService {
 }
 
 /**
- * Placeholder for Status Service Interface.
- * To be fleshed out in later tasks.
+ * Defines the synchronization status of the plugin.
+ */
+export interface SyncStatus {
+  isSyncing: boolean;
+  lastSyncTime: number | null; // Timestamp
+  lastSyncAttemptTime: number | null; // Timestamp
+  lastSyncSuccess: boolean | null;
+  sharedCharactersCount: number;
+  lastSyncMessage: string | null;
+}
+
+/**
+ * Defines the overall operational status of the plugin.
+ */
+export interface PluginStatus {
+  isAuthenticated: boolean;
+  syncStatus: SyncStatus;
+  serverVersion: string; // Could be package.json version
+  // Add other relevant status fields
+}
+
+/**
+ * Interface for the Status Service.
+ * Manages loading, saving, and accessing plugin operational status.
  */
 export interface IStatusService {
-  // Example method:
-  // getPluginStatus(): Promise<any>;
+  /**
+   * Initializes the status service, loads existing status, and sets the plugin version.
+   * @param pluginVersion - The current version of the plugin/server.
+   */
+  init(pluginVersion: string): Promise<void>;
+
+  /**
+   * Loads status from the persistence layer (e.g., a JSON file).
+   * This is typically called by `init()`.
+   */
+  loadStatus(): Promise<void>;
+
+  /**
+   * Retrieves the current plugin status.
+   * @returns The current plugin status.
+   */
+  getStatus(): PluginStatus;
+
+  /**
+   * Updates specified parts of the plugin status and persists them.
+   * @param newStatus - An object containing the status fields to update.
+   */
+  updateStatus(newStatus: Partial<PluginStatus>): Promise<void>;
+
+  /**
+   * Updates specified parts of the synchronization status and persists them.
+   * @param syncUpdate - An object containing the sync status fields to update.
+   */
+  updateSyncStatus(syncUpdate: Partial<SyncStatus>): Promise<void>;
+
+  /**
+   * Sets the authentication status and persists it.
+   * @param isAuthenticated - True if authenticated, false otherwise.
+   */
+  setAuthenticated(isAuthenticated: boolean): Promise<void>;
+
+  /**
+   * Sets the syncing state, updates the last sync attempt time, and optionally a message.
+   * @param isSyncing - True if sync is starting, false if stopping (though recordSyncCompletion is preferred for completion).
+   * @param message - Optional message related to the sync attempt.
+   */
+  setSyncing(isSyncing: boolean, message?: string): Promise<void>;
+
+  /**
+   * Records the completion of a synchronization attempt.
+   * @param success - True if the sync was successful, false otherwise.
+   * @param count - The number of characters shared/synced.
+   * @param message - Optional message describing the sync outcome.
+   */
+  recordSyncCompletion(success: boolean, count: number, message?: string): Promise<void>;
 }
 
 /**
