@@ -70,12 +70,59 @@ export interface ISettingsService {
 }
 
 /**
- * Placeholder for Authentication Service Interface.
- * To be fleshed out in later tasks.
+ * Defines the structure for Dropbox OAuth token data.
+ */
+export interface DropboxTokenData {
+  accessToken: string;
+  refreshToken?: string; // May not always be present initially, but crucial for refresh
+  expiresIn: number; // Seconds until expiry from time of issue
+  issuedAt: number; // Timestamp (ms) when tokens were issued/last refreshed
+}
+
+/**
+ * Interface for the Authentication Service.
+ * Manages Dropbox OAuth tokens, including loading, saving, refreshing, and validation.
  */
 export interface IAuthService {
-  // Example method:
-  // authenticate(credentials: any): Promise<boolean>;
+  /**
+   * Initializes the authentication service.
+   * Loads any persisted token and sets up dependencies.
+   * @param settingsService - Service to access application settings (e.g., Dropbox app key/secret).
+   * @param statusService - Service to update the global authentication status.
+   */
+  init(settingsService: ISettingsService, statusService: IStatusService): Promise<void>;
+
+  /**
+   * Handles new token data received, typically after a successful OAuth callback.
+   * Persists the new token data.
+   * @param tokenData - The raw token data from the OAuth provider.
+   *                  Expected structure: { access_token: string; refresh_token?: string; expires_in: number }
+   */
+  handleNewToken(tokenData: { access_token: string; refresh_token?: string; expires_in: number }): Promise<void>;
+
+  /**
+   * Retrieves a valid access token.
+   * If the current token is expired or nearing expiry, it attempts to refresh it.
+   * @returns A promise that resolves to the access token string, or null if not authenticated or refresh fails.
+   */
+  getAccessToken(): Promise<string | null>;
+
+  /**
+   * Checks if the service currently holds a valid, non-expired access token.
+   * This is a quick check and does not attempt to refresh the token.
+   * @returns True if authenticated, false otherwise.
+   */
+  isAuthenticated(): boolean;
+
+  /**
+   * Clears any stored authentication token data from memory and persistence.
+   * Effectively logs the user out.
+   */
+  logout(): Promise<void>;
+
+  // Optional: Direct refresh method if other parts of the application
+  // need to trigger a refresh explicitly, though getAccessToken should typically handle this.
+  // refreshAccessToken(): Promise<boolean>;
 }
 
 /**
