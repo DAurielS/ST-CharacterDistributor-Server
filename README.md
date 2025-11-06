@@ -30,11 +30,12 @@ The Character Distributor consists of two components:
 2. Click "Create app"
 3. Choose "Scoped access" and "App Folder" access
 4. Name your app (e.g., "ST Character Distributor")
-5. Add the following redirect URI:
+5. Add the following redirect URLS:
    ```
-   http://127.0.0.1:8000/scripts/extensions/third-party/ST-CharacterDistributor-UI/public/oauth_callback.html
+   http://localhost:8000/scripts/extensions/third-party/ST-CharacterDistributor/dist/public/oauth_callback.html
+   http://127.0.0.1:8000/scripts/extensions/third-party/ST-CharacterDistributor/dist/public/oauth_callback.html
    ```
-6. Click "Permission Type: Scoped Access (App Folder)" to go to the Permission page
+6. Go to the Permissions menu within the app configuration page
 7. Enable everything under "Files and folders"
 8. Click "Submit"
 9. Note your App Key and App Secret for later use
@@ -83,7 +84,6 @@ enableServerPlugins: true
 4. Click "Save Settings"
 5. Authenticate with Dropbox by clicking the "Authenticate with Dropbox" button
 6. Once authenticated, the status will show "Authenticated"
-7. This may require you to refresh the page
 
 ## Usage
 
@@ -92,12 +92,6 @@ enableServerPlugins: true
 1. Ensure characters are properly tagged (those with excluded tags won't be shared)
 2. Click "Force Sync Now" to manually trigger synchronization
 3. The sync status will update with the number of characters synced
-
-### Generating Share Links
-
-1. Select a character from the dropdown in the "Share Characters" section
-2. Click "Generate Share Link"
-3. Copy the link to share with others
 
 ### Automatic Syncing
 
@@ -167,10 +161,6 @@ cd ST-CharacterDistributor-Server
 npm install
 npm run build
 ```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Acknowledgements
 
