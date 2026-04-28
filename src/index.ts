@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import { Router, Request, Response } from 'express';
 import { setupApiRoutes } from './api/routes';
-import { initializeDropbox, performSync as runSync, generateShareLink as createShareLink, checkDropboxAuth, restoreDropboxClient, clearAuthToken, validateDropboxCredentials } from './dropbox/client';
+import { initializeDropbox, performSync as runSync, generateShareLink as createShareLink, checkDropboxAuth, restoreDropboxClient, clearAuthToken, validateDropboxCredentials, generateAndUploadIndex } from './dropbox/client';
 import * as fs from 'fs';
 import * as path from 'path';
 import express from 'express';
@@ -1009,6 +1009,35 @@ async function init(router: Router) {
                 success: false, 
                 message: 'Internal server error processing sync request' 
             });
+        }
+    });
+
+    // Set up generate-index endpoint (generate index.json without performing a full sync)
+    router.post('/generate-index', async (req: Request, res: Response) => {
+        try {
+            console.log(chalk.green(MODULE), 'Manual index.json generation requested');
+
+            // Use SillyTavern's character directory
+            const sillyTavernDir = process.env.SILLY_TAVERN_DIR || '.';
+            const charactersDir = process.env.CHARACTERS_DIR || path.join(sillyTavernDir, 'data', 'default-user', 'characters');
+
+            // Validate directory exists
+            if (!fs.existsSync(charactersDir)) {
+                console.error(chalk.red(MODULE), `Characters directory ${charactersDir} not found`);
+                return res.status(404).json({ success: false, error: 'Character directory not found' });
+            }
+
+            const success = await generateAndUploadIndex(charactersDir);
+
+            if (success) {
+                updateStatus({ lastSync: new Date().toISOString() });
+                return res.status(200).json({ success: true, message: 'index.json generation started' });
+            } else {
+                return res.status(500).json({ success: false, error: 'Failed to generate index.json' });
+            }
+        } catch (error) {
+            console.error(chalk.red(MODULE), 'Error handling generate-index request:', error);
+            return res.status(500).json({ success: false, error: 'Internal server error' });
         }
     });
     

@@ -37,8 +37,9 @@ The Character Distributor consists of two components:
    ```
 6. Go to the Permissions menu within the app configuration page
 7. Enable everything under "Files and folders"
-8. Click "Submit"
-9. Note your App Key and App Secret for later use
+8. Enable "sharing.read" under "Collaboration"
+9. Click "Submit"
+10. Note your App Key and App Secret for later use
 
 ### Step 2: Install UI Extension
 
