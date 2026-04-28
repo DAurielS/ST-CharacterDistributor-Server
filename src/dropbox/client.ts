@@ -10,6 +10,7 @@ import fetch from 'node-fetch';
 const pngMetadata = require('png-metadata');
 // Import our custom PNG utilities
 import { extractPngMetadata, extractCharacterData, CharacterData } from '../utils/pngUtils';
+import { compileDropboxIndex, uploadDropboxIndex } from './indexUtils';
 
 // Shared module variables
 const MODULE = '[Character-Distributor-Dropbox]';
@@ -916,6 +917,12 @@ export async function performSync(
         // Clean up temp cache after sync
         await cleanupTempCache();
         
+        // Generate and upload index.json after sync is complete
+        const indexResult = await generateAndUploadIndex(charactersDir);
+        if (!indexResult) {
+            console.warn(chalk.yellow(MODULE), 'index.json generation completed with errors');
+        }
+        
         console.log(chalk.green(MODULE), `Sync complete. Uploaded ${uploadCount} files, removed ${removedCount} files`);
         return { success: true, count: uploadCount, removed: removedCount };
     } catch (error) {
@@ -966,4 +973,36 @@ async function executeWithTokenRefresh<T>(
             throw error;
         }
     }
-} 
+}
+ 
+/**
+ * Generate an index.json of all characters and upload it to Dropbox.
+ * This includes retrieving the direct download links for the files.
+ */
+export async function generateAndUploadIndex(charactersDir: string): Promise<boolean> {
+    if (!dropboxClient) {
+        console.error(chalk.red(MODULE), 'Dropbox client not initialized. Cannot generate index.json');
+        return false;
+    }
+    
+    try {
+        console.log(chalk.blue(MODULE), 'Generating index.json for all characters in Dropbox...');
+        
+        // 1. Get list of files currently in Dropbox /characters folder
+        const result = await dropboxClient.filesListFolder({ path: '/characters' });
+        const entries = result.result.entries.filter(e => e['.tag'] === 'file' && (e.name.endsWith('.png') || e.name.endsWith('.json')));
+
+        const characterIndex = await compileDropboxIndex(dropboxClient, charactersDir, entries as any);
+        const indexDirectUrl = await uploadDropboxIndex(dropboxClient, characterIndex);
+
+        console.log(chalk.green(MODULE), `Successfully uploaded index.json with ${characterIndex.length} characters.`);
+        if (indexDirectUrl) {
+            console.log(chalk.green(MODULE), chalk.bold(`YOUR DIRECT INDEX LINK IS: ${indexDirectUrl}`));
+        }
+        
+        return true;
+    } catch (error) {
+        console.error(chalk.red(MODULE), 'Error generating index.json:', error);
+        return false;
+    }
+}

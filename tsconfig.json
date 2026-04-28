@@ -20,5 +20,8 @@
         "node_modules",
         "dist",
         "bin"
+    ],
+    "types": [
+        "node"
     ]
 } 
